@@ -129,90 +129,6 @@ int EasyMidiRouterMain(int argc, char* argv[])
     enumMidiDevices( false, outputs );
     std::wcout << L"\n";
 
-    // Parse input arguments
-    std::wstring argsFile  = L"";
-    std::wstring inputName  = L"";
-    std::wstring outputName = L"";
-    bool args_error = false;
-    switch(argc)
-    {
-        case 1:
-            argsFile = L"EasyMidiRouter.args";
-            break;
-        case 2:
-            if (wcsstr(argv[1], L".args")==0)
-                inputName  = argv[1];
-            else
-                argsFile = argv[1];
-            break;
-        case 3:
-            inputName  = argv[1];
-            outputName = argv[2];
-            break;
-
-        default:
-            std::wcerr << L"ERROR: Too many params.\n";
-            args_error=true;
-    }
-
-    // Read args file
-    if (!argsFile.empty()) 
-    {
-        std::wcout << L"INFO: arguments from:"<<argsFile<<".\n";
-        if ( loadArgsFile ( argsFile, inputName, outputName ) )
-            std::wcout << L"INFO: Arguments loaded from file. Input='"<<inputName<<L"' Output='"<<outputName<<L"'.\n";
-        else
-        {
-            std::wcout << L"INFO: Failed to load arguments from file.'.\n";
-            args_error=true;
-        }
-    }
-
-    // Convert indexes to device names
-    if (!args_error)
-    {
-        int inputIndex = getIndexFromString(inputName);
-        if (inputIndex>=0)
-        {
-            if (inputIndex<int(inputs.Size()))
-                inputName=inputs.GetAt(inputIndex).Name();
-            else
-            {
-                std::wcerr << L"ERROR: Input index exceeds available input devices number.\n";
-                args_error=true;
-            }
-        }
-
-        int outputIndex = getIndexFromString(outputName);
-        if (outputIndex>=0)
-        {
-            if (outputIndex<int(outputs.Size()))
-                outputName=outputs.GetAt(outputIndex).Name();
-            else
-            {
-                std::wcerr << L"ERROR: Output index exceeds available output devices number.\n";
-                args_error=true;
-            }
-        }
-    }
-
-    // Display usage instructions and exit if needed
-    if (args_error) 
-    {
-        std::wcout << L"\n";
-        std::wcout << L"----- Usage.\n";
-        std::wcout << L"    EasyMidiRouter.exe                       - try to execute EasyMidiRouter.args.\n";
-        std::wcout << L"    EasyMidiRouter.exe <file.args>           - execute specified <file.args>.\n";
-        std::wcout << L"    EasyMidiRouter.exe <midi_src>            - debug MIDI source messages\n";
-        std::wcout << L"    EasyMidiRouter.exe <midi_src> <midi_dst> - route MIDI source messages to destination\n";
-        std::wcout << L"";
-        std::wcout << L"    Notes:\n";
-        std::wcout << L"        <midi_src/midi_dst>                  - could be index number, full name or name part\n";
-        std::wcout << L"        EasyMidiRouter.args or <file.args>   - file format: line 0 <midi_src>, line 1 <midi_dst>\n";
-        std::wcout << L"\n";
-        return 0;
-    }
-
     // Initialization and loop
     {
         // Main variables
@@ -269,6 +185,7 @@ int EasyMidiRouterMain(int argc, char* argv[])
             const int reconnectionInterval = 1000;
             bool reconnecting = (!outputValid || !inputValid );
     
+            /*
             // reconnect output
             if ( !outputValid && (GetTickCount64()-outputConnectionTryTime)>reconnectionInterval )
             {
@@ -345,6 +262,7 @@ int EasyMidiRouterMain(int argc, char* argv[])
                     args_error=true;
                 }
             }   
+            */
 
             // Reconection check
             if ( reconnecting && outputValid && inputValid )
