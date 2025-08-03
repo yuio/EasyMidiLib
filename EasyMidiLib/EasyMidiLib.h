@@ -1,10 +1,17 @@
-#ifndef _EASYMIDIROUTER_H
-#define _EASYMIDIROUTER_H
+#ifndef _EASYMIDILIB_H
+#define _EASYMIDILIB_H
+
+#include <string>
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-int EasyMidiRouterMain(int argc, char* argv[]);
+bool EasyMidiLib_init();
+void EasyMidiLib_done();
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-#endif //_EASYMIDIROUTER_H
+const char* EasyMidiLib_getLastError();
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+#endif //_EASYMIDILIB_H

@@ -1,3 +1,4 @@
+#include "EasyMidiLib.h"
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Devices.Enumeration.h>
@@ -7,6 +8,7 @@
 
 #include <windows.h>
 #include <conio.h>
+#include <stdarg.h>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -15,6 +17,106 @@ using namespace winrt;
 using namespace Windows::Devices::Enumeration;
 using namespace Windows::Devices::Midi;
 using namespace Windows::Storage::Streams;
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static bool        initialized = false;
+static std::string lastError;
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+void EasyMidiLib_setLastErrorf ( const char* textf, ... )
+{
+    va_list args;
+    va_start(args, textf);
+    int count = std::vsnprintf(nullptr, 0, textf, args);
+    va_end(args);
+
+    lastError.resize(static_cast<size_t>(count) + 1);
+    va_start(args, textf);
+    std::vsnprintf(&lastError[0], lastError.size(), textf, args);
+    va_end(args);
+    
+    lastError.resize(count);
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+const char* EasyMidiLib_getLastError()
+{
+    return lastError.c_str();
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+bool EasyMidiLib_init()
+{
+    if (initialized) return true;
+
+    bool ok = true;
+
+
+
+    EasyMidiLib_setLastErrorf ("testign %d",1 );
+
+
+    // Done if errors or set as initialized if ok
+    if (!ok)
+        EasyMidiLib_done();
+    else
+        initialized=true;
+
+    return ok;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+void EasyMidiLib_done()
+{
+
+    initialized=false;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 //--------------------------------------------------------------------------------------------------------------------------
 
