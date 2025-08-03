@@ -12,6 +12,8 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <map>
+#include <mutex>
 
 using namespace winrt;
 using namespace Windows::Devices::Enumeration;
@@ -20,8 +22,121 @@ using namespace Windows::Storage::Streams;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static bool        initialized = false;
-static std::string lastError;
+static bool                 initialized       = false;
+static size_t               debugVerboseLevel = 0;
+static std::string          lastError         = "";
+static EasyMidiLibListener* mainListener      = 0;
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static DeviceWatcher    inputsWatcher  = nullptr;
+static DeviceWatcher    outputsWatcher = nullptr;
+
+struct MidiDeviceInfo 
+{
+    EasyMidiLibDevice   info      = {};
+    DeviceInformation   device    = 0;
+    bool                connected = false;
+};
+
+static std::mutex                           devicesMutex;
+static std::map<std::string,MidiDeviceInfo> inputs ;
+static std::map<std::string,MidiDeviceInfo> outputs;
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void deviceConnected ( DeviceInformation const& info, std::map<std::string,MidiDeviceInfo>& devices )
+{
+    std::lock_guard<std::mutex> lock(devicesMutex);
+
+    const char* deviceType = (&devices==&inputs) ? "input" : "output";
+
+    MidiDeviceInfo d;
+    d.info.isInput         = (&devices==&inputs);
+    d.info.name            = winrt::to_string(info.Name());
+    d.info.id              = winrt::to_string(info.Id  ());
+    d.info.open            = false;
+    d.info.internalHandler = 0;
+    d.device               = info;
+    d.connected            = true;
+
+    devices[d.info.id] = d;
+    devices[d.info.id].info.internalHandler = &devices[d.info.id];
+    
+    if ( mainListener )
+        mainListener->deviceConnected ( &d.info );
+
+    if ( debugVerboseLevel>0 )
+        printf ( "EasyMidiLib: MIDI %s connected %s (id:%s)\n", deviceType, d.info.name.c_str(), d.info.id.c_str() );
+
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void deviceDisconnected ( const DeviceInformationUpdate& info, std::map<std::string,MidiDeviceInfo>& devices )
+{
+    std::lock_guard<std::mutex> lock(devicesMutex);
+
+    const char* deviceType = (&devices==&inputs) ? "input" : "output";
+
+    std::string id = winrt::to_string(info.Id());
+    if ( debugVerboseLevel>0 )
+        printf ( "EasyMidiLib: MIDI %s disconnected (id:%s)\n", deviceType, id.c_str() );
+
+    auto it = devices.find(id);
+    if ( it != devices.end() )
+    {
+        MidiDeviceInfo& d = it->second;
+        d.connected=false;
+        
+        if ( mainListener )
+            mainListener->deviceDisconnected ( &d.info );
+    }
+    else
+    {
+        printf ( "EasyMidiLib: Untracked %s disconnected (id:%s) (this shouldn't happen)\n", deviceType, id.c_str() );
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void devicesEnumeration ( std::map<std::string,MidiDeviceInfo>& src, std::vector<const EasyMidiLibDevice*>& dst )
+{
+    std::lock_guard<std::mutex> lock(devicesMutex);
+
+    dst.resize(0);
+    for ( auto& it : src )
+        if ( it.second.connected )
+            dst.push_back(&it.second.info);
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static std::vector<const EasyMidiLibDevice*> userInputsEnumeration;
+
+void EasyMidiLib_updateInputsEnumeration()
+{
+    devicesEnumeration ( inputs, userInputsEnumeration );
+}
+
+const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getInputDevices()
+{
+    return userInputsEnumeration;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static std::vector<const EasyMidiLibDevice*> userOutputsEnumeration;
+
+void EasyMidiLib_updateOutputsEnumeration()
+{
+    devicesEnumeration ( outputs, userOutputsEnumeration );
+}
+
+const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getOutputDevices()
+{
+    return userOutputsEnumeration;
+}
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -49,22 +164,63 @@ const char* EasyMidiLib_getLastError()
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_init()
+bool EasyMidiLib_init( EasyMidiLibListener* listener, size_t verboseLevel )
 {
     if (initialized) return true;
 
     bool ok = true;
 
+    // Set verbose level
+    debugVerboseLevel = verboseLevel;
+    mainListener      = listener;
 
+    // Init apartament
+    if ( ok )
+    {
+        try 
+        {
+            init_apartment();
+        }
+        catch (...)
+        {
+            EasyMidiLib_setLastErrorf("Failed to initialize WinRT apartment");
+            ok = false;
+        }
+    }
 
-    EasyMidiLib_setLastErrorf ("testign %d",1 );
+    // Init inputs device watcher
+    if ( ok )
+    {
+        inputsWatcher = DeviceInformation::CreateWatcher(MidiInPort::GetDeviceSelector());
+        inputsWatcher.Added([](DeviceWatcher const&, DeviceInformation const& info)
+            { deviceConnected ( info, inputs ); } );
+        inputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) 
+            { deviceDisconnected ( info, inputs ); } );
+        inputsWatcher.Start();
+    }
 
+    // Init outputs device watcher
+    if ( ok )
+    {
+        outputsWatcher = DeviceInformation::CreateWatcher(MidiOutPort::GetDeviceSelector());
+        outputsWatcher.Added([](DeviceWatcher const&, DeviceInformation const& info)
+            { deviceConnected ( info, outputs ); } );
+        outputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) 
+            { deviceDisconnected ( info, outputs ); } );
+        outputsWatcher.Start();
+    }
 
     // Done if errors or set as initialized if ok
     if (!ok)
         EasyMidiLib_done();
     else
+    {
         initialized=true;
+        EasyMidiLib_updateInputsEnumeration ();
+        EasyMidiLib_updateOutputsEnumeration();
+        if ( mainListener )
+            mainListener->libInit();
+    }
 
     return ok;
 }
@@ -73,8 +229,24 @@ bool EasyMidiLib_init()
 
 void EasyMidiLib_done()
 {
+    if ( outputsWatcher )
+    {
+        outputsWatcher.Stop();
+        outputsWatcher = 0;
+    }
 
-    initialized=false;
+    if ( inputsWatcher )
+    {
+        inputsWatcher.Stop();
+        inputsWatcher = 0;
+    }
+
+    if ( initialized && mainListener )
+        mainListener->libDone();
+
+    initialized       =false;
+    debugVerboseLevel = 0;
+    mainListener      = 0;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -115,6 +287,21 @@ void EasyMidiLib_done()
 
 
 
+
+
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+void enumMidiDevices( bool inputs, DeviceInformationCollection& devices ) 
+{    
+    Windows::Foundation::IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(inputs?MidiInPort::GetDeviceSelector():MidiOutPort::GetDeviceSelector());
+    devices = devicesOp.get();
+    uint32_t deviceCount = devices.Size();
+    for (uint32_t i = 0; i < deviceCount; ++i) 
+    {
+        DeviceInformation device = devices.GetAt(i);
+    }
+}
 
 
 
@@ -190,30 +377,6 @@ bool loadArgsFile ( const std::wstring& argsFileName, std::wstring& inputName, s
     trim_spaces(outputName);
 
     return true;
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-void enumMidiDevices( bool inputs, DeviceInformationCollection& devices, bool dumpInfo=true ) 
-{    
-    if (dumpInfo) std::wcout << L"\n";
-    if (dumpInfo) std::wcout << L"-----Midi "<<(inputs?"input":"outputs")<<" devices-----\n";
-
-    Windows::Foundation::IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(inputs?MidiInPort::GetDeviceSelector():MidiOutPort::GetDeviceSelector());
-    devices = devicesOp.get();
-    uint32_t deviceCount = devices.Size();
-    if (deviceCount == 0) 
-    {
-        if (dumpInfo) std::wcout << L"No MIDI devices found.\n";
-    } 
-    else 
-    {
-        for (uint32_t i = 0; i < deviceCount; ++i) 
-        {
-            DeviceInformation device = devices.GetAt(i);
-            if (dumpInfo) std::wcout << L"    [" << i << L"] '" << device.Name().c_str() << L"'" << std::endl;
-        }
-    }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
