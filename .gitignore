@@ -416,3 +416,4 @@ _test*.*
 *.xcuserstate
 .idea/
 .claude/settings.local.json
+*.idb
