@@ -13,14 +13,16 @@ class EasyMidiTestLibListener : public EasyMidiLibListener, public EasyMidiLibDe
     void deviceConnected    ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceConnected %s (%s)\n"   , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
     void deviceReconnected  ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceReconnected %s (%s)\n" , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
     void deviceDisconnected ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceDisconnected %s (%s)\n", d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void deviceOpen         ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceOpen %s (%s)\n"        , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void deviceClose        ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceClosed %s (%s)\n"      , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
     void deviceInData       ( const EasyMidiLibDevice* d ) override     { }
 
     // EasyMidiLibDeviceListener messages
 
-    void open               ( const EasyMidiLibDevice* d ) override     { }
-    void close              ( const EasyMidiLibDevice* d ) override     { }
-    void connected          ( const EasyMidiLibDevice* d ) override     { }
-    void disconnected       ( const EasyMidiLibDevice* d ) override     { }
+    void open               ( const EasyMidiLibDevice* d ) override     { printf("devlistener -> %s open %s (%s)\n"              , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void close              ( const EasyMidiLibDevice* d ) override     { printf("devlistener -> %s closed %s (%s)\n"            , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void connected          ( const EasyMidiLibDevice* d ) override     { printf("devlistener -> %s deviceConnected %s (%s)\n"   , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void disconnected       ( const EasyMidiLibDevice* d ) override     { printf("devlistener -> %s deviceReconnected %s (%s)\n" , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
 
 
     // EasyMidiLibInputListener messages
@@ -56,7 +58,7 @@ int main(int argc, char* argv[])
     // Init library
     if (ok)
     {
-        if (!EasyMidiLib_init( &testListener, 10 ))
+        if (!EasyMidiLib_init( &testListener ))
         {
             printf ( "EasyMidiLib_init error:%s\n", EasyMidiLib_getLastError() );
             ok = false;
@@ -79,6 +81,8 @@ int main(int argc, char* argv[])
         bool running = true;
         while(running)
         {
+            EasyMidiLib_update();
+
           if (_kbhit()) 
           {
                 int key = _getch();
@@ -103,7 +107,7 @@ int main(int argc, char* argv[])
                     case '0' : case '1' : case '2' : case '3' : case '4' : case '5' : case '6' : case '7' : case '8' :case '9' :
                         {
                             size_t deviceIndex = size_t(key-'0');
-                            const std::vector<const EasyMidiLibDevice*>& devices = EasyMidiLib_getOutputDevices();
+                            const std::vector<const EasyMidiLibDevice*>& devices = EasyMidiLib_getInputDevices();
                             if ( deviceIndex<devices.size() )
                             {
                                 const EasyMidiLibDevice* device = devices[deviceIndex];
@@ -119,8 +123,9 @@ int main(int argc, char* argv[])
                         break;
                 
                     case 'A' : case 'B' : case 'C' : case 'D' : case 'E' : case 'F' : case 'G' : case 'H' : case 'I': case 'J' :
+                    case 'a' : case 'b' : case 'c' : case 'd' : case 'e' : case 'f' : case 'g' : case 'h' : case 'i': case 'j' :
                         {
-                            size_t deviceIndex = size_t(key-'A');
+                            size_t deviceIndex = std::islower(key) ? size_t(key-'a') : size_t(key-'A');
                             const std::vector<const EasyMidiLibDevice*>& devices = EasyMidiLib_getOutputDevices();
                             if ( deviceIndex<devices.size() )
                             {

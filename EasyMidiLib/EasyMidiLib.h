@@ -15,7 +15,8 @@ class  EasyMidiLibInputListener ;
 // Main control
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool        EasyMidiLib_init         ( EasyMidiLibListener* listener=0, size_t verboseLevel=0 );
+bool        EasyMidiLib_init         ( EasyMidiLibListener* listener=0 );
+void        EasyMidiLib_update       ( );
 void        EasyMidiLib_done         ( );
 const char* EasyMidiLib_getLastError ( );
 
@@ -70,6 +71,8 @@ class EasyMidiLibListener
         virtual void deviceConnected    ( const EasyMidiLibDevice* d )  {} // unknown thread
         virtual void deviceReconnected  ( const EasyMidiLibDevice* d )  {} // unknown thread
         virtual void deviceDisconnected ( const EasyMidiLibDevice* d )  {} // unknown thread
+        virtual void deviceOpen         ( const EasyMidiLibDevice* d )  {} // caller  thread
+        virtual void deviceClose        ( const EasyMidiLibDevice* d )  {} // caller  thread
         virtual void deviceInData       ( const EasyMidiLibDevice* d )  {} // unknown thread
 };
 

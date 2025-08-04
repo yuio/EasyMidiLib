@@ -23,7 +23,6 @@ using namespace Windows::Storage::Streams;
 //--------------------------------------------------------------------------------------------------------------------------
 
 static bool                 initialized       = false;
-static size_t               debugVerboseLevel = 0;
 static std::string          lastError         = "";
 static EasyMidiLibListener* mainListener      = 0;
 
@@ -66,16 +65,11 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
         MidiDeviceInfo& d = it->second;
         if ( !d.connected )
         {
-            if ( debugVerboseLevel>3 )
-                printf ( "EasyMidiLib: MIDI %s reconnected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
-
             if ( mainListener )
                 mainListener->deviceReconnected ( &d.info );
         }
         else
         {
-            if ( debugVerboseLevel>3 )
-                printf ( "EasyMidiLib: MIDI %s already enumerated/detected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
         }
 
     }
@@ -93,9 +87,6 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
         devices[d.info.id] = d;
         devices[d.info.id].info.internalHandler = &devices[d.info.id];
 
-        if ( debugVerboseLevel>0 )
-            printf ( "EasyMidiLib: MIDI %s connected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
-    
         if ( mainListener )
             mainListener->deviceConnected ( &d.info );
 
@@ -111,9 +102,6 @@ static void deviceDisconnected ( const DeviceInformationUpdate& info, std::map<s
     const char* deviceType = (&devices==&inputs) ? "input" : "output";
 
     std::string id = winrt::to_string(info.Id());
-    if ( debugVerboseLevel>0 )
-        printf ( "EasyMidiLib: MIDI %s disconnected (id:%s)\n", deviceType, id.c_str() );
-
     auto it = devices.find(id);
     if ( it != devices.end() )
     {
@@ -195,15 +183,14 @@ const char* EasyMidiLib_getLastError()
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_init( EasyMidiLibListener* listener, size_t verboseLevel )
+bool EasyMidiLib_init( EasyMidiLibListener* listener )
 {
     if (initialized) return true;
 
     bool ok = true;
 
     // Set verbose level
-    debugVerboseLevel = verboseLevel;
-    mainListener      = listener;
+    mainListener = listener;
 
     // Init apartament
     if ( ok )
@@ -270,6 +257,12 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener, size_t verboseLevel )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
+void EasyMidiLib_update ( )
+{
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
 void EasyMidiLib_done()
 {
     if ( outputsWatcher )
@@ -294,7 +287,6 @@ void EasyMidiLib_done()
     userOutputsEnumeration.clear();
 
     initialized       =false;
-    debugVerboseLevel = 0;
     mainListener      = 0;
 }
 
@@ -318,9 +310,6 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, EasyMidiLibInputListe
 {
     bool ok = true;
 
-    if ( debugVerboseLevel>1 )
-        printf ( "EasyMidiLib_inputOpen called\n" );
-
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
     if ( !device->info.opened )
     {
@@ -330,9 +319,6 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, EasyMidiLibInputListe
         device->inPort   = device->inPortOp.get();
         if ( device->inPort )
         {
-            if ( debugVerboseLevel>0 )
-                printf ( "EasyMidiLib: input opened:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
-
             device->inPort.MessageReceived([&](IMidiInPort const&, MidiMessageReceivedEventArgs const& args) 
             {
                 IBuffer raw = args.Message().RawData();
@@ -340,37 +326,33 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, EasyMidiLibInputListe
                 while (reader.UnconsumedBufferLength() > 0) 
                 {
                     uint8_t b = reader.ReadByte();
-                    std::wcout << (b<=0xf?L"0":L"") << std::hex << static_cast<int>(b) << L" ";
+                    std::cout << (b<=0xf?"0":"") << std::hex << static_cast<int>(b) << " ";
+                    std::cout << "\n";
 
-                    static size_t line_output_count = 0;
-                    line_output_count++;
-                    if (line_output_count>=36)
-                    {
-                        std::wcout << L"\n";
-                        line_output_count=0;
-                    }
+                    //static size_t line_output_count = 0;
+                    //line_output_count++;
+                    //if (line_output_count>=36)
+                    //{
+                    //    std::wcout << L"\n";
+                    //    line_output_count=0;
+                    //}
                 }
             });
 
             device->info.opened = true;
+
+            if ( mainListener )
+                mainListener->deviceOpen(dev);
         }
         else
         {
-            if ( debugVerboseLevel>0 )
-                printf ( "EasyMidiLib: input open error:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
-
-            device->inPortOp = nullptr;
-            device->inPort   = nullptr;
-
+            EasyMidiLib_inputClose ( dev );
             ok = false;
             setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
         }
     }
     else
     {
-        if ( debugVerboseLevel>1 )
-            printf ( "EasyMidiLib_inputClose called, but already open\n" );
-
         ok = false;
         setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
     }
@@ -382,26 +364,19 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, EasyMidiLibInputListe
 
 void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
 {
-    if ( debugVerboseLevel>1 )
-        printf ( "EasyMidiLib_inputClose called\n" );
-
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    if ( device->info.opened )
-    {
-        MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    bool wasOpened = device->info.opened ;
 
-        device->inPortOp = nullptr;
-        device->inPort   = nullptr;
+    if (device->inPort)
+        device->inPort.Close();
+  
+    device->inPortOp = nullptr;
+    device->inPort   = nullptr;    
 
-    
-        if ( debugVerboseLevel>0 )
-            printf ( "EasyMidiLib: input closed:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
-    }
-    else
-    {
-        if ( debugVerboseLevel>1 )
-            printf ( "EasyMidiLib_inputClose called, but already close\n" );
-    }
+    device->info.opened = false;
+
+    if ( wasOpened && mainListener )
+        mainListener->deviceClose(dev);
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -409,7 +384,7 @@ void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
 bool EasyMidiLib_outputOpen ( size_t enumIndex )
 {
     if ( enumIndex<userOutputsEnumeration.size() )
-        return EasyMidiLib_inputOpen ( userInputsEnumeration[enumIndex] );
+        return EasyMidiLib_outputOpen ( userOutputsEnumeration[enumIndex] );
     else
         setLastErrorf("EasyMidiLib_inputOpen index %zu out of range (enum elements %zu)", enumIndex, userOutputsEnumeration.size() );
 }
@@ -420,28 +395,32 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev )
 {
     bool ok = true;
 
-    if ( debugVerboseLevel>1 )
-        printf ( "EasyMidiLib_inputClose called\n" );
-    /*
-                    output=outputs.GetAt(outputIndex);
-                    outPortOp = MidiOutPort::FromIdAsync(output.Id());
-                    outPort = outPortOp.get();
-                    if (!outPort)
-                    {   
-                        std::wcout << L"INFO: Failed to open output device '"<<outputName<<L"'.\n";
-                    }
-                    else
-                    {
-                        std::wcout << L"INFO: Output device opened successfully. ["<<outputIndex<<"] '"<<outputName<<L"'.\n";
-                        outputValid = true;
-                    }
-*/
+    MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    if ( !device->info.opened )
+    {
+        bool ok = true;
 
-/*
-                            IBuffer raw = args.Message().RawData();
-                            if (outputValid && outPort)
-                                outPort.SendBuffer(raw);
-*/
+        device->outPortOp = MidiOutPort::FromIdAsync(device->device.Id());
+        device->outPort   = device->outPortOp.get();
+        if ( device->outPort )
+        {
+            device->info.opened = true;
+
+            if ( mainListener )
+                mainListener->deviceOpen(dev);
+        }
+        else
+        {
+            EasyMidiLib_outputClose ( dev );
+            ok = false;
+            setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+        }
+    }
+    else
+    {
+        ok = false;
+        setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+    }
 
     return ok;
 }
@@ -450,8 +429,46 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev )
 
 void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev )
 {
-    if ( debugVerboseLevel>1 )
-        printf ( "EasyMidiLib_outputClose called\n" );
+    MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    bool wasOpened = device->info.opened;
+
+    if (device->outPort)
+        device->outPort.Close();
+  
+    device->outPortOp = nullptr;
+    device->outPort   = nullptr;
+
+    device->info.opened = false;
+
+    if ( wasOpened && mainListener )
+        mainListener->deviceClose(dev);
 }
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+void EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev )
+{
+    MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    bool wasOpened = device->info.opened;
+
+    if (device->outPort)
+        device->outPort.Close();
+  
+    device->outPortOp = nullptr;
+    device->outPort   = nullptr;
+
+    device->info.opened = false;
+
+    if ( wasOpened && mainListener )
+        mainListener->deviceClose(dev);
+}
+
+
+/*
+                            IBuffer raw = args.Message().RawData();
+                            if (outputValid && outPort)
+                                outPort.SendBuffer(raw);
+*/
+
 
 //--------------------------------------------------------------------------------------------------------------------------
