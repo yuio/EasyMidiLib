@@ -33,15 +33,17 @@ const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getOutputDevices       
 // Input
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_inputOpen  ( EasyMidiLibDeviceListener& devListener, EasyMidiLibInputListener& inListener );
-void EasyMidiLib_inputClose ( );
+bool EasyMidiLib_inputOpen  ( size_t enumIndex            , EasyMidiLibInputListener* inListener=0 );
+bool EasyMidiLib_inputOpen  ( const EasyMidiLibDevice* dev, EasyMidiLibInputListener* inListener=0 );
+void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev );
 
 //--------------------------------------------------------------------------------------------------------------------------
 // Output
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_inputOpen  ( );
-void EasyMidiLib_inputClose ( );
+bool EasyMidiLib_outputOpen  ( size_t enumIndex             );
+bool EasyMidiLib_outputOpen  ( const EasyMidiLibDevice* dev );
+void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev );
 
 //--------------------------------------------------------------------------------------------------------------------------
 // EasyMidiLibDevice
@@ -52,7 +54,7 @@ struct EasyMidiLibDevice
     bool        isInput        ;
     std::string name           ;
     std::string id             ;
-    bool        open           ;
+    bool        opened         ;
     const void* internalHandler;
 };
 
@@ -66,6 +68,7 @@ class EasyMidiLibListener
         virtual void libInit            ( )                             {} // caller  thread
         virtual void libDone            ( )                             {} // caller  thread
         virtual void deviceConnected    ( const EasyMidiLibDevice* d )  {} // unknown thread
+        virtual void deviceReconnected  ( const EasyMidiLibDevice* d )  {} // unknown thread
         virtual void deviceDisconnected ( const EasyMidiLibDevice* d )  {} // unknown thread
         virtual void deviceInData       ( const EasyMidiLibDevice* d )  {} // unknown thread
 };

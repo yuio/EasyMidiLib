@@ -35,8 +35,13 @@ static DeviceWatcher    outputsWatcher = nullptr;
 struct MidiDeviceInfo 
 {
     EasyMidiLibDevice   info      = {};
-    DeviceInformation   device    = 0;
     bool                connected = false;
+    DeviceInformation   device    = 0;
+
+    Windows::Devices::Midi::IMidiOutPort                                        outPort   = nullptr;
+    Windows::Foundation::IAsyncOperation<Windows::Devices::Midi::IMidiOutPort>  outPortOp = nullptr;
+    Windows::Devices::Midi::MidiInPort                                          inPort    = nullptr;
+    Windows::Foundation::IAsyncOperation<Windows::Devices::Midi::MidiInPort>    inPortOp  = nullptr;
 };
 
 static std::mutex                           devicesMutex;
@@ -49,26 +54,52 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
 {
     std::lock_guard<std::mutex> lock(devicesMutex);
 
+    std::string id   = winrt::to_string(info.Id  ());
+    std::string name = winrt::to_string(info.Name());
+
     const char* deviceType = (&devices==&inputs) ? "input" : "output";
 
-    MidiDeviceInfo d;
-    d.info.isInput         = (&devices==&inputs);
-    d.info.name            = winrt::to_string(info.Name());
-    d.info.id              = winrt::to_string(info.Id  ());
-    d.info.open            = false;
-    d.info.internalHandler = 0;
-    d.device               = info;
-    d.connected            = true;
+    auto it = devices.find(id);
+    bool alreadyExists = (it==devices.end()) ? false : true;
+    if ( alreadyExists )
+    {
+        MidiDeviceInfo& d = it->second;
+        if ( !d.connected )
+        {
+            if ( debugVerboseLevel>3 )
+                printf ( "EasyMidiLib: MIDI %s reconnected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
 
-    devices[d.info.id] = d;
-    devices[d.info.id].info.internalHandler = &devices[d.info.id];
+            if ( mainListener )
+                mainListener->deviceReconnected ( &d.info );
+        }
+        else
+        {
+            if ( debugVerboseLevel>3 )
+                printf ( "EasyMidiLib: MIDI %s already enumerated/detected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
+        }
+
+    }
+    else
+    {
+        MidiDeviceInfo d;
+        d.info.isInput         = (&devices==&inputs);
+        d.info.name            = name;
+        d.info.id              = id;
+        d.info.opened          = false;
+        d.info.internalHandler = 0;
+        d.device               = info;
+        d.connected            = true;
+
+        devices[d.info.id] = d;
+        devices[d.info.id].info.internalHandler = &devices[d.info.id];
+
+        if ( debugVerboseLevel>0 )
+            printf ( "EasyMidiLib: MIDI %s connected %s (id:%s)\n", deviceType, name.c_str(), id.c_str() );
     
-    if ( mainListener )
-        mainListener->deviceConnected ( &d.info );
+        if ( mainListener )
+            mainListener->deviceConnected ( &d.info );
 
-    if ( debugVerboseLevel>0 )
-        printf ( "EasyMidiLib: MIDI %s connected %s (id:%s)\n", deviceType, d.info.name.c_str(), d.info.id.c_str() );
-
+    }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -140,7 +171,7 @@ const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getOutputDevices()
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_setLastErrorf ( const char* textf, ... )
+static void setLastErrorf ( const char* textf, ... )
 {
     va_list args;
     va_start(args, textf);
@@ -183,19 +214,33 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener, size_t verboseLevel )
         }
         catch (...)
         {
-            EasyMidiLib_setLastErrorf("Failed to initialize WinRT apartment");
+            setLastErrorf("Failed to initialize WinRT apartment");
             ok = false;
         }
+    }
+
+    // Enum inputs
+    {
+        Windows::Foundation::IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(MidiInPort::GetDeviceSelector());
+        DeviceInformationCollection devices = devicesOp.get();
+        for (uint32_t i = 0; i < devices.Size(); ++i) 
+            deviceConnected ( devices.GetAt(i), inputs );
+    }
+
+    // Enum outputs
+    {
+        Windows::Foundation::IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(MidiOutPort::GetDeviceSelector());
+        DeviceInformationCollection devices = devicesOp.get();
+        for (uint32_t i = 0; i < devices.Size(); ++i) 
+            deviceConnected ( devices.GetAt(i), outputs );
     }
 
     // Init inputs device watcher
     if ( ok )
     {
         inputsWatcher = DeviceInformation::CreateWatcher(MidiInPort::GetDeviceSelector());
-        inputsWatcher.Added([](DeviceWatcher const&, DeviceInformation const& info)
-            { deviceConnected ( info, inputs ); } );
-        inputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) 
-            { deviceDisconnected ( info, inputs ); } );
+        inputsWatcher.Added  ([](DeviceWatcher const&, DeviceInformation       const& info) { deviceConnected    ( info, inputs ); } );
+        inputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) { deviceDisconnected ( info, inputs ); } );
         inputsWatcher.Start();
     }
 
@@ -203,10 +248,8 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener, size_t verboseLevel )
     if ( ok )
     {
         outputsWatcher = DeviceInformation::CreateWatcher(MidiOutPort::GetDeviceSelector());
-        outputsWatcher.Added([](DeviceWatcher const&, DeviceInformation const& info)
-            { deviceConnected ( info, outputs ); } );
-        outputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) 
-            { deviceDisconnected ( info, outputs ); } );
+        outputsWatcher.Added  ([](DeviceWatcher const&, DeviceInformation       const& info) { deviceConnected    ( info, outputs ); } );
+        outputsWatcher.Removed([](DeviceWatcher const&, DeviceInformationUpdate const& info) { deviceDisconnected ( info, outputs ); } );
         outputsWatcher.Start();
     }
 
@@ -244,6 +287,12 @@ void EasyMidiLib_done()
     if ( initialized && mainListener )
         mainListener->libDone();
 
+    inputs .clear();
+    outputs.clear();
+
+    userInputsEnumeration .clear();
+    userOutputsEnumeration.clear();
+
     initialized       =false;
     debugVerboseLevel = 0;
     mainListener      = 0;
@@ -251,214 +300,129 @@ void EasyMidiLib_done()
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-void enumMidiDevices( bool inputs, DeviceInformationCollection& devices ) 
-{    
-    Windows::Foundation::IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(inputs?MidiInPort::GetDeviceSelector():MidiOutPort::GetDeviceSelector());
-    devices = devicesOp.get();
-    uint32_t deviceCount = devices.Size();
-    for (uint32_t i = 0; i < deviceCount; ++i) 
-    {
-        DeviceInformation device = devices.GetAt(i);
-    }
-}
-
-
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-int getIndexFromString(const std::wstring& str) 
+bool EasyMidiLib_inputOpen ( size_t enumIndex, EasyMidiLibInputListener* inListener )
 {
-    bool all_digits = std::all_of(str.begin(), str.end(), 
-                                  [](wchar_t c) 
-                                    { 
-                                        return std::isdigit(c); 
-                                    });
-    return (all_digits&&str.size()) ? std::stoi(str) : -1;
+    bool ok = true;
+
+    if ( enumIndex<userInputsEnumeration.size() )
+        return EasyMidiLib_inputOpen ( userInputsEnumeration[enumIndex], inListener );
+    else
+        setLastErrorf("EasyMidiLib_inputOpen index %zu out of range (enum elements %zu)", enumIndex, userInputsEnumeration.size() );
+
+    return ok;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-int getDeviceIndexFromString(DeviceInformationCollection& devices, const std::wstring& substring )
+bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, EasyMidiLibInputListener* inListener )
 {
-    uint32_t deviceCount = devices.Size();
-    for (uint32_t i = 0; i < deviceCount; ++i) 
+    bool ok = true;
+
+    if ( debugVerboseLevel>1 )
+        printf ( "EasyMidiLib_inputOpen called\n" );
+
+    MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    if ( !device->info.opened )
     {
-        DeviceInformation device = devices.GetAt(i);
-        std::wstring deviceName = device.Name().c_str();
-        if ( deviceName.find(substring)!=std::string::npos) 
-            return i;
-    }
+        bool ok = true;
 
-    return -1;
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-void trim_spaces (std::wstring& str)
-{
-    size_t start = 0;
-    while (start < str.size() && std::isspace(str[start])) 
-        ++start;
-
-    if (start == str.size()) {
-        str.clear();
-        return;
-    }
-
-    size_t end = str.size() - 1;
-    while (end > start && std::isspace(str[end]))
-        --end;
-
-    str = str.substr(start, end - start + 1);
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-bool loadArgsFile ( const std::wstring& argsFileName, std::wstring& inputName, std::wstring& outputName ) 
-{    
-    std::wifstream file(argsFileName);
-    if (!file.is_open()) 
-    {
-        std::wcerr << L"ERROR: Unable to open file: " << argsFileName << std::endl;
-        return false;
-    }
-
-    std::getline(file, inputName );
-    std::getline(file, outputName);
-    file.close();
-
-    if (inputName.empty() || outputName.empty()) {
-        return false;
-    }
-
-    // Trim spaces
-    trim_spaces(inputName);
-    trim_spaces(outputName);
-
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-int EasyMidiRouterMain(int argc, char* argv[])
-{
-    std::wcout.setf(std::ios::unitbuf);
-
-    init_apartment();
-
-    // Enumerate MIDI devices
-    DeviceInformationCollection inputs = nullptr;
-    DeviceInformationCollection outputs = nullptr;
-    enumMidiDevices( true, inputs  );
-    enumMidiDevices( false, outputs );
-    std::wcout << L"\n";
-
-    // Initialization and loop
-    {
-        // Main variables
-        std::atomic<bool> outputValid{ false };
-        DeviceInformation output = nullptr;
-        uint64_t outputConnectionTryTime = 0;
-        Windows::Devices::Midi::IMidiOutPort outPort = nullptr;        
-        Windows::Foundation::IAsyncOperation<Windows::Devices::Midi::IMidiOutPort> outPortOp = nullptr;
-
-        std::atomic<bool> inputValid { false };
-        DeviceInformation input  = nullptr;
-        uint64_t inputConnectionTryTime = 0;
-        Windows::Devices::Midi::MidiInPort inPort = nullptr;
-        Windows::Foundation::IAsyncOperation<Windows::Devices::Midi::MidiInPort>inPortOp = nullptr;
-
-        // Prepare output watcher
-        DeviceWatcher outputWatcher = DeviceInformation::CreateWatcher(MidiOutPort::GetDeviceSelector());
-        outputWatcher.Removed([&](DeviceWatcher const&, DeviceInformationUpdate const& info) 
+        device->inPortOp = MidiInPort::FromIdAsync(device->device.Id());
+        device->inPort   = device->inPortOp.get();
+        if ( device->inPort )
         {
-            if (outputValid)
+            if ( debugVerboseLevel>0 )
+                printf ( "EasyMidiLib: input opened:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
+
+            device->inPort.MessageReceived([&](IMidiInPort const&, MidiMessageReceivedEventArgs const& args) 
             {
-                if (info.Id() == output.Id())
+                IBuffer raw = args.Message().RawData();
+                DataReader reader = DataReader::FromBuffer(raw);
+                while (reader.UnconsumedBufferLength() > 0) 
                 {
-                    outputValid = false;
-                    std::wcout << L"\nMIDI OUTPUT disconnected.\n";
+                    uint8_t b = reader.ReadByte();
+                    std::wcout << (b<=0xf?L"0":L"") << std::hex << static_cast<int>(b) << L" ";
+
+                    static size_t line_output_count = 0;
+                    line_output_count++;
+                    if (line_output_count>=36)
+                    {
+                        std::wcout << L"\n";
+                        line_output_count=0;
+                    }
                 }
-            }
-        });
-        outputWatcher.Start();
+            });
 
-        // Prepare input watcher
-        DeviceWatcher inputWatcher = DeviceInformation::CreateWatcher(MidiInPort::GetDeviceSelector());
-        inputWatcher.Removed([&](DeviceWatcher const&, DeviceInformationUpdate const& info) {
-            if (inputValid)
-            {
-                if (info.Id() == input.Id()) 
-                {
-                    inputValid = false;
-                    std::wcout << L"\nMIDI INPUT disconnected.\n";
-                }
-            }
-        });
-
-        inputWatcher.Start();
-
-        // Display initialization message
-        std::wcout << "\n";
-        std::wcout << L"Initializing...";
-        std::wcout << L"(Press CTRL+Q to exit)\n";
-
-        // Main Loop
-        while (true) 
+            device->info.opened = true;
+        }
+        else
         {
-            const int reconnectionInterval = 1000;
-            bool reconnecting = (!outputValid || !inputValid );
+            if ( debugVerboseLevel>0 )
+                printf ( "EasyMidiLib: input open error:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
+
+            device->inPortOp = nullptr;
+            device->inPort   = nullptr;
+
+            ok = false;
+            setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+        }
+    }
+    else
+    {
+        if ( debugVerboseLevel>1 )
+            printf ( "EasyMidiLib_inputClose called, but already open\n" );
+
+        ok = false;
+        setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+    }
+
+    return ok;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
+{
+    if ( debugVerboseLevel>1 )
+        printf ( "EasyMidiLib_inputClose called\n" );
+
+    MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+    if ( device->info.opened )
+    {
+        MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
+
+        device->inPortOp = nullptr;
+        device->inPort   = nullptr;
+
     
-            /*
-            // reconnect output
-            if ( !outputValid && (GetTickCount64()-outputConnectionTryTime)>reconnectionInterval )
-            {
-                outputConnectionTryTime = GetTickCount64(); 
-                enumMidiDevices( false, outputs, false );
-                int outputIndex = getDeviceIndexFromString(outputs, outputName);
-                if (outputIndex>=0)
-                {
+        if ( debugVerboseLevel>0 )
+            printf ( "EasyMidiLib: input closed:%s(%s)\n", dev->name.c_str(), dev->id.c_str() );
+    }
+    else
+    {
+        if ( debugVerboseLevel>1 )
+            printf ( "EasyMidiLib_inputClose called, but already close\n" );
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+bool EasyMidiLib_outputOpen ( size_t enumIndex )
+{
+    if ( enumIndex<userOutputsEnumeration.size() )
+        return EasyMidiLib_inputOpen ( userInputsEnumeration[enumIndex] );
+    else
+        setLastErrorf("EasyMidiLib_inputOpen index %zu out of range (enum elements %zu)", enumIndex, userOutputsEnumeration.size() );
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev )
+{
+    bool ok = true;
+
+    if ( debugVerboseLevel>1 )
+        printf ( "EasyMidiLib_inputClose called\n" );
+    /*
                     output=outputs.GetAt(outputIndex);
                     outPortOp = MidiOutPort::FromIdAsync(output.Id());
                     outPort = outPortOp.get();
@@ -471,87 +435,23 @@ int EasyMidiRouterMain(int argc, char* argv[])
                         std::wcout << L"INFO: Output device opened successfully. ["<<outputIndex<<"] '"<<outputName<<L"'.\n";
                         outputValid = true;
                     }
-                }
-                else 
-                {
-                    std::wcout << L"INFO: Output device '"<<outputName<<L"' not found.\n";
-                    args_error=true;
-                }
-            }   
+*/
 
-            // reconnect input
-            if ( !inputValid && (GetTickCount64()-inputConnectionTryTime)>reconnectionInterval )
-            {
-                inputConnectionTryTime = GetTickCount64(); 
-                enumMidiDevices( true, inputs, false );
-                int inputIndex = getDeviceIndexFromString(inputs, inputName);
-                if (inputIndex>=0)
-                {
-                    input=inputs.GetAt(inputIndex);
-                    inPortOp = MidiInPort::FromIdAsync(input.Id());
-                    inPort = inPortOp.get();
-                    if (!inPort)
-                    {
-                        std::wcout << L"INFO: Failed to open input device '"<<inputName<<L"'.\n";
-                    }
-                    else
-                    {
-                        std::wcout << L"INFO: Input device opened successfully. ["<<inputIndex<<"] '"<<inputName<<L"'.\n";
-                        inputValid = true;
-                        inPort.MessageReceived([&](IMidiInPort const&, MidiMessageReceivedEventArgs const& args) 
-                        {
+/*
                             IBuffer raw = args.Message().RawData();
                             if (outputValid && outPort)
                                 outPort.SendBuffer(raw);
-                
-                            DataReader reader = DataReader::FromBuffer(raw);
-                            while (reader.UnconsumedBufferLength() > 0) 
-                            {
-                                uint8_t b = reader.ReadByte();
-                                std::wcout << (b<=0xf?L"0":L"") << std::hex << static_cast<int>(b) << L" ";
+*/
 
-                                static size_t line_output_count = 0;
-                                line_output_count++;
-                                if (line_output_count>=36)
-                                {
-                                    std::wcout << L"\n";
-                                    line_output_count=0;
-                                }
-                            }
-                        });
-                    }
-                }
-                else 
-                {
-                    std::wcout << L"INFO: Input device '"<<inputName<<L"' not found.\n";
-                    args_error=true;
-                }
-            }   
-            */
+    return ok;
+}
 
-            // Reconection check
-            if ( reconnecting && outputValid && inputValid )
-            {
-                std::wcout << L"\n";
-                std::wcout << L"Routing messages from '"<<input.Name().c_str()<<"' to '"<<output.Name().c_str()<<"'";
-                std::wcout << L"(Press CTRL+Q to exit)\n";
-            }
+//--------------------------------------------------------------------------------------------------------------------------
 
-            // Exit key check
-            if (_kbhit()) {
-                int ch = _getch();
-                if (ch == 17) {
-                    break;
-                }
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        }
-    }
-
-    std::wcout << L"Exiting...\n";
-
-    return 0;
+void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev )
+{
+    if ( debugVerboseLevel>1 )
+        printf ( "EasyMidiLib_outputClose called\n" );
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
