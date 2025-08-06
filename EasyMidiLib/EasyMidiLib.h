@@ -2,14 +2,11 @@
 #define _EASYMIDILIB_H
 
 #include <string>
-#include <vector>
 
 //--------------------------------------------------------------------------------------------------------------------------
 
 struct EasyMidiLibDevice        ;
 class  EasyMidiLibListener      ;
-class  EasyMidiLibDeviceListener;
-class  EasyMidiLibInputListener ;
 
 //--------------------------------------------------------------------------------------------------------------------------
 // Main control
@@ -24,27 +21,31 @@ const char* EasyMidiLib_getLastError ( );
 // Enumeration
 //--------------------------------------------------------------------------------------------------------------------------
 
-void                                         EasyMidiLib_updateInputsEnumeration ();
-const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getInputDevices         ();
+void                     EasyMidiLib_updateInputsEnumeration ();
+size_t                   EasyMidiLib_getInputDevicesNum      ();
+const EasyMidiLibDevice* EasyMidiLib_getInputDevice          ( size_t i );
 
-void                                         EasyMidiLib_updateOutputsEnumeration();
-const std::vector<const EasyMidiLibDevice*>& EasyMidiLib_getOutputDevices        ();
+void                     EasyMidiLib_updateOutputsEnumeration();
+size_t                   EasyMidiLib_getOutputDevicesNum     ();
+const EasyMidiLibDevice* EasyMidiLib_getOutputDevice         ( size_t i );
 
 //--------------------------------------------------------------------------------------------------------------------------
 // Input
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_inputOpen  ( size_t enumIndex            , EasyMidiLibInputListener* inListener=0 );
-bool EasyMidiLib_inputOpen  ( const EasyMidiLibDevice* dev, EasyMidiLibInputListener* inListener=0 );
+bool EasyMidiLib_inputOpen  ( size_t enumIndex            , void* userPtrParam=0, int64_t userIntParam=0 );
+bool EasyMidiLib_inputOpen  ( const EasyMidiLibDevice* dev, void* userPtrParam=0, int64_t userIntParam=0 );
 void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev );
 
 //--------------------------------------------------------------------------------------------------------------------------
 // Output
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_outputOpen  ( size_t enumIndex             );
-bool EasyMidiLib_outputOpen  ( const EasyMidiLibDevice* dev );
+bool EasyMidiLib_outputOpen  ( size_t enumIndex            , void* userPtrParam=0, int64_t userIntParam=0 );
+bool EasyMidiLib_outputOpen  ( const EasyMidiLibDevice* dev, void* userPtrParam=0, int64_t userIntParam=0 );
 void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev );
+
+bool EasyMidiLib_outputSend  ( const EasyMidiLibDevice* dev, const uint8_t* data, size_t size );
 
 //--------------------------------------------------------------------------------------------------------------------------
 // EasyMidiLibDevice
@@ -56,7 +57,10 @@ struct EasyMidiLibDevice
     std::string name           ;
     std::string id             ;
     bool        opened         ;
+    void*       userPtrParam   ;
+    int64_t     userIntParam   ;
     const void* internalHandler;
+
 };
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -66,39 +70,46 @@ struct EasyMidiLibDevice
 class EasyMidiLibListener
 {
     public:
-        virtual void libInit            ( )                             {} // caller  thread
-        virtual void libDone            ( )                             {} // caller  thread
-        virtual void deviceConnected    ( const EasyMidiLibDevice* d )  {} // unknown thread
-        virtual void deviceReconnected  ( const EasyMidiLibDevice* d )  {} // unknown thread
-        virtual void deviceDisconnected ( const EasyMidiLibDevice* d )  {} // unknown thread
-        virtual void deviceOpen         ( const EasyMidiLibDevice* d )  {} // caller  thread
-        virtual void deviceClose        ( const EasyMidiLibDevice* d )  {} // caller  thread
-        virtual void deviceInData       ( const EasyMidiLibDevice* d )  {} // unknown thread
+        virtual void    libInit            ( )                                                                  {}                   // caller  thread
+        virtual void    libDone            ( )                                                                  {}                   // caller  thread
+        virtual void    deviceConnected    ( const EasyMidiLibDevice* d )                                       {}                   // unknown thread
+        virtual void    deviceReconnected  ( const EasyMidiLibDevice* d )                                       {}                   // unknown thread
+        virtual void    deviceDisconnected ( const EasyMidiLibDevice* d )                                       {}                   // unknown thread
+        virtual void    deviceOpen         ( const EasyMidiLibDevice* d )                                       {}                   // caller  thread
+        virtual void    deviceClose        ( const EasyMidiLibDevice* d )                                       {}                   // caller  thread
+        virtual size_t  deviceInData       ( const EasyMidiLibDevice* d, const uint8_t* data, size_t dataSize ) { return dataSize; } // unknown thread
+        virtual void    deviceOutData      ( const EasyMidiLibDevice* d, const uint8_t* data, size_t dataSize ) {}                   // caller  thread
 };
-
-//--------------------------------------------------------------------------------------------------------------------------
-// EasyMidiLibDeviceListener
 //--------------------------------------------------------------------------------------------------------------------------
 
-class EasyMidiLibDeviceListener
-{ 
-    public:
-        virtual void open          ( const EasyMidiLibDevice* d )       {} // caller  thread
-        virtual void close         ( const EasyMidiLibDevice* d )       {} // caller  thread
-        virtual void connected     ( const EasyMidiLibDevice* d )       {} // unknown thread
-        virtual void disconnected  ( const EasyMidiLibDevice* d )       {} // unknown thread
+class EasyMidiLibTestListener : public EasyMidiLibListener
+{
+    void    libInit            ( ) override                                { printf("listener -> libInit()\n"); }
+    void    libDone            ( ) override                                { printf("listener -> libDone()\n"); }
+    void    deviceConnected    ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceConnected %s (%s)\n"   , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void    deviceReconnected  ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceReconnected %s (%s)\n" , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void    deviceDisconnected ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceDisconnected %s (%s)\n", d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void    deviceOpen         ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceOpen %s (%s)\n"        , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    void    deviceClose        ( const EasyMidiLibDevice* d ) override     { printf("listener -> %s deviceClosed %s (%s)\n"      , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() ); }
+    size_t  deviceInData       ( const EasyMidiLibDevice* d, const uint8_t* data, size_t dataSize ) override
+    { 
+        printf("listener -> %s deviceInData %s (%s)\n    "      , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() );
+        for ( size_t i=0; i!=dataSize; i++  )
+             printf ( "%02X ", data[i] );
+        printf ("\n");
+
+        return SIZE_MAX; 
+    }
+
+    void    deviceOutData      ( const EasyMidiLibDevice* d, const uint8_t* data, size_t dataSize ) override 
+    { 
+        printf("listener -> %s deviceOutData %s (%s)\n    "      , d->isInput?"in":"out", d->name.c_str(), d->id.c_str() );
+        for ( size_t i=0; i!=dataSize; i++  )
+             printf ( "%02X ", data[i] );
+        printf ("\n");
+    }
 };
-
-//--------------------------------------------------------------------------------------------------------------------------
-// EasyMidiLibInputListener
-//--------------------------------------------------------------------------------------------------------------------------
-
-class EasyMidiLibInputListener
-{ 
-    private:
-        virtual void inData        ( const EasyMidiLibDevice* d )       {} // unknown thread
-
-};
+extern EasyMidiLibTestListener EasyMidiLib_testListener;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
