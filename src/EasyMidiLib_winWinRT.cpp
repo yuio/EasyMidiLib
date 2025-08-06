@@ -15,6 +15,7 @@
 #include <fstream>
 #include <string>
 #include <map>
+#include <thread>
 #include <mutex>
 
 using namespace winrt;
@@ -22,6 +23,9 @@ using namespace Windows::Foundation;
 using namespace Windows::Devices::Enumeration;
 using namespace Windows::Devices::Midi;
 using namespace Windows::Storage::Streams;
+
+#define AVOID_STA_BEGIN  { auto sta_thread = [&]() { init_apartment();
+#define AVOID_STA_END   }; std::thread enumThread(sta_thread); enumThread.join();}
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -83,7 +87,6 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
         {
             // should not happen
         }
-
     }
     else
     {
@@ -226,12 +229,26 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
     // Set verbose level
     mainListener = listener;
 
-    // Init apartament
+    // Init apartment - safe to call multiple times due to reference counting
     if ( ok )
     {
         try 
         {
-            init_apartment();
+            //init_apartment(apartment_type::single_threaded); // also supported
+            init_apartment(apartment_type::multi_threaded);
+        }
+        catch (winrt::hresult_error const& ex)
+        {
+            // If apartment already initialized with different mode, continue
+            if (ex.code() == RPC_E_CHANGED_MODE)
+            {
+                // Already initialized by host application - continue normally
+            }
+            else
+            {
+                setLastErrorf("Failed to initialize WinRT apartment: 0x%X", ex.code().value);
+                ok = false;
+            }
         }
         catch (...)
         {
@@ -241,19 +258,30 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
     }
 
     // Enum inputs
+    if ( ok )
     {
+        AVOID_STA_BEGIN;
+
         IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(MidiInPort::GetDeviceSelector());
         DeviceInformationCollection devices = devicesOp.get();
         for (uint32_t i = 0; i < devices.Size(); ++i) 
             deviceConnected ( devices.GetAt(i), inputs );
+
+        AVOID_STA_END;
     }
 
     // Enum outputs
+    if ( ok )
     {
+        AVOID_STA_BEGIN;
+
+        init_apartment();
         IAsyncOperation<DeviceInformationCollection> devicesOp = DeviceInformation::FindAllAsync(MidiOutPort::GetDeviceSelector());
         DeviceInformationCollection devices = devicesOp.get();
         for (uint32_t i = 0; i < devices.Size(); ++i) 
             deviceConnected ( devices.GetAt(i), outputs );
+
+        AVOID_STA_END;
     }
 
     // Init inputs device watcher
@@ -357,7 +385,7 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
         if ( device->userDev.opened )
         {
             ok = false;
-            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );        
+            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
         }
     }
 
@@ -365,6 +393,8 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
     // Open
     if ( ok )
     {
+        AVOID_STA_BEGIN;
+
         device->inPortOp = MidiInPort::FromIdAsync(device->device.Id());
         if (device->inPortOp.wait_for(std::chrono::seconds(5)) == winrt::Windows::Foundation::AsyncStatus::Completed) 
         {
@@ -377,6 +407,8 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
             ok = false;
             setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );        
         }
+
+        AVOID_STA_END;
     }
 
     // Open
@@ -492,6 +524,8 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, 
     // Open
     if ( ok )
     {
+        AVOID_STA_BEGIN;
+
         device->outPortOp = MidiOutPort::FromIdAsync(device->device.Id());
         device->outPort   = device->outPortOp.get();
         if ( device->outPort )
@@ -503,6 +537,8 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, 
             if ( mainListener )
                 mainListener->deviceOpen(dev);
         }
+
+        AVOID_STA_END;
     }
 
     // Close if errors
