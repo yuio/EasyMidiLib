@@ -1,3 +1,5 @@
+#if defined(__APPLE__)
+
 #include "EasyMidiLib.h"
 #include <CoreMIDI/CoreMIDI.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -13,7 +15,7 @@
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener       EasyMidiLib_testListener      ;
+EasyMidiLibTestListener EasyMidiLib_testListener;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -625,3 +627,5 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
+
+#endif //defined(__APPLE__)

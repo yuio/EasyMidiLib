@@ -1,3 +1,5 @@
+#if defined(__linux__)
+
 #include "EasyMidiLib.h"
 #include <alsa/asoundlib.h>
 
@@ -12,7 +14,7 @@
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener       EasyMidiLib_testListener      ;
+EasyMidiLibTestListener EasyMidiLib_testListener;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -709,3 +711,5 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
+
+#endif //defined(__linux__)

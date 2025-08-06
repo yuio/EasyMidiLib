@@ -1,3 +1,5 @@
+#ifdef _WIN32
+
 #include "EasyMidiLib.h"
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -23,7 +25,7 @@ using namespace Windows::Storage::Streams;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener       EasyMidiLib_testListener      ;
+EasyMidiLibTestListener EasyMidiLib_testListener;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -576,3 +578,5 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
+
+#endif //_WIN32
