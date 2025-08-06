@@ -111,53 +111,60 @@ static void MidiNotifyProc(const MIDINotification *message, void *refCon)
     
     switch (message->messageID) {
         case kMIDIMsgObjectAdded: {
-            const MIDIMsgObjectAddRemove *addRemoveMsg = (const MIDIMsgObjectAddRemove *)message;
+            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
             MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
             
-            // Check if it's a source (input) or destination (output)
-            MIDIObjectType objectType;
-            if (MIDIObjectGetType(endpoint, &objectType) != noErr) return;
+            // Check if it's a source (input) or destination (output)  
+            // Try to determine if it's a source by attempting to get source count
+            ItemCount sourceCount = MIDIGetNumberOfSources();
+            ItemCount destCount = MIDIGetNumberOfDestinations();
+            bool isInput = false;
             
-            if (objectType == kMIDIObjectType_Source || objectType == kMIDIObjectType_Destination) {
-                std::string id = GetEndpointID(endpoint);
-                std::string name = GetEndpointName(endpoint);
-                bool isInput = (objectType == kMIDIObjectType_Source);
-                
-                std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
-                
-                auto it = devices.find(id);
-                if (it != devices.end()) {
-                    // Device reconnected
-                    it->second.connected = true;
-                    it->second.endpoint = endpoint;
-                    if (mainListener)
-                        mainListener->deviceReconnected(&it->second.userDev);
-                } else {
-                    // New device
-                    MidiDeviceInfo d;
-                    d.userDev.isInput         = isInput;
-                    d.userDev.name            = name;
-                    d.userDev.id              = id;
-                    d.userDev.opened          = false;
-                    d.userDev.userPtrParam    = 0;
-                    d.userDev.userIntParam    = 0;
-                    d.userDev.internalHandler = 0;
-                    d.endpoint                = endpoint;
-                    d.connected               = true;
-                    d.isSource                = isInput;
-                    d.inputQueue.reserve(10240);
-                    
-                    devices[id] = d;
-                    devices[id].userDev.internalHandler = &devices[id];
-                    
-                    if (mainListener)
-                        mainListener->deviceConnected(&devices[id].userDev);
+            // Check if the endpoint is in the sources list
+            for (ItemCount i = 0; i < sourceCount; i++) {
+                if (MIDIGetSource(i) == endpoint) {
+                    isInput = true;
+                    break;
                 }
+            }
+            
+            std::string id = GetEndpointID(endpoint);
+            std::string name = GetEndpointName(endpoint);
+            
+            std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
+            
+            auto it = devices.find(id);
+            if (it != devices.end()) {
+                // Device reconnected
+                it->second.connected = true;
+                it->second.endpoint = endpoint;
+                if (mainListener)
+                    mainListener->deviceReconnected(&it->second.userDev);
+            } else {
+                // New device
+                MidiDeviceInfo d;
+                d.userDev.isInput         = isInput;
+                d.userDev.name            = name;
+                d.userDev.id              = id;
+                d.userDev.opened          = false;
+                d.userDev.userPtrParam    = 0;
+                d.userDev.userIntParam    = 0;
+                d.userDev.internalHandler = 0;
+                d.endpoint                = endpoint;
+                d.connected               = true;
+                d.isSource                = isInput;
+                d.inputQueue.reserve(10240);
+                
+                devices[id] = d;
+                devices[id].userDev.internalHandler = &devices[id];
+                
+                if (mainListener)
+                    mainListener->deviceConnected(&devices[id].userDev);
             }
             break;
         }
         case kMIDIMsgObjectRemoved: {
-            const MIDIMsgObjectAddRemove *addRemoveMsg = (const MIDIMsgObjectAddRemove *)message;
+            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
             MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
             std::string id = GetEndpointID(endpoint);
             
@@ -183,6 +190,14 @@ static void MidiNotifyProc(const MIDINotification *message, void *refCon)
             }
             break;
         }
+        case kMIDIMsgSetupChanged:
+        case kMIDIMsgPropertyChanged:
+        case kMIDIMsgThruConnectionsChanged:
+        case kMIDIMsgSerialPortOwnerChanged:
+        case kMIDIMsgIOError:
+        default:
+            // Handle other message types or ignore them
+            break;
     }
 }
 

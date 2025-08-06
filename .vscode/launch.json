@@ -5,26 +5,40 @@
             "name": "macOS Test Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/arm64/Debug/EasyMidiLibTest",
+            "program": "${workspaceFolder}/bin/universal/Debug/EasyMidiLibTest",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": true,
             "MIMode": "lldb",
+            "setupCommands": [
+                {
+                    "description": "Force ARM64 architecture",
+                    "text": "settings set target.default-arch arm64",
+                    "ignoreFailures": true
+                }
+            ],
             "preLaunchTask": "Build macOS Debug"
         },
         {
             "name": "macOS Test Release",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/arm64/Release/EasyMidiLibTest",
+            "program": "${workspaceFolder}/bin/universal/Release/EasyMidiLibTest",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": true,
             "MIMode": "lldb",
+            "setupCommands": [
+                {
+                    "description": "Force ARM64 architecture",
+                    "text": "settings set target.default-arch arm64",
+                    "ignoreFailures": true
+                }
+            ],
             "preLaunchTask": "Build macOS Release"
         },
         {
