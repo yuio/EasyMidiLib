@@ -1,6 +1,41 @@
 #include "EasyMidiLib.h"
-#include <windows.h>
-#include <conio.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #include <conio.h>
+#else
+    #include <termios.h>
+    #include <unistd.h>
+    #include <sys/select.h>
+    #include <fcntl.h>
+    
+    int _kbhit() {
+        struct timeval tv;
+        fd_set fds;
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
+        return FD_ISSET(STDIN_FILENO, &fds);
+    }
+    
+    int _getch() {
+        struct termios oldt, newt;
+        int ch;
+        tcgetattr(STDIN_FILENO, &oldt);
+        newt = oldt;
+        newt.c_lflag &= ~(ICANON | ECHO);
+        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+        ch = getchar();
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+        return ch;
+    }
+    
+    void Sleep(int ms) {
+        usleep(ms * 1000);
+    }
+#endif
 
 //--------------------------------------------------------------------------------------------------------------------------
 

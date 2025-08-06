@@ -160,7 +160,7 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="EasyMidiLib.cpp" />
+    <ClCompile Include="EasyMidiLib_winWinRT.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="EasyMidiLib.h" />
