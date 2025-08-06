@@ -1,0 +1,18 @@
+{
+    "folders": 
+    [
+        {
+            "path": ".."
+        }
+    ],
+
+      "settings": {
+          "files.exclude": {
+              "_intermediate": true,
+              "vs2022": true,
+              "vscode": true,
+              "**/.git": true
+          }
+      }
+
+}
