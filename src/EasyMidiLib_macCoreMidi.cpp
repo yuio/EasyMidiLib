@@ -15,10 +15,6 @@
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener EasyMidiLib_testListener;
-
-//--------------------------------------------------------------------------------------------------------------------------
-
 static bool                 initialized       = false;
 static std::string          lastError         = "";
 static EasyMidiLibListener* mainListener      = 0;
@@ -394,9 +390,9 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_update ( )
+bool EasyMidiLib_update ( )
 {
-    // CoreMIDI handles callbacks automatically, no polling needed
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------

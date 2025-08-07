@@ -159,6 +159,7 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\src\EasyMidiLib.cpp" />
     <ClCompile Include="..\..\src\EasyMidiLib_linuxAlsa.cpp" />
     <ClCompile Include="..\..\src\EasyMidiLib_macCoreMidi.cpp" />
     <ClCompile Include="..\..\src\EasyMidiLib_winWinRT.cpp" />

@@ -58,6 +58,20 @@ void printEnumeration ( bool isInput )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
+class MidiHandlerTest : public EasyMidiLibListener
+{
+    public:
+
+        MidiHandlerTest() : EasyMidiLibListener(true)   {}
+        virtual ~MidiHandlerTest()                      {}
+
+        // Using default listener verbose
+};
+
+static MidiHandlerTest midiHandlerTest;
+
+//--------------------------------------------------------------------------------------------------------------------------
+
 int main(int argc, char* argv[])
 {
     bool ok = true;
@@ -65,7 +79,7 @@ int main(int argc, char* argv[])
     // Init library
     if (ok)
     {
-        if (!EasyMidiLib_init( &EasyMidiLib_testListener ))
+        if (!EasyMidiLib_init( &midiHandlerTest ))
         {
             printf ( "EasyMidiLib_init error:%s\n", EasyMidiLib_getLastError() );
             ok = false;

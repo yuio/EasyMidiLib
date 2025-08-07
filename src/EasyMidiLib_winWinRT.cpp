@@ -29,10 +29,6 @@ using namespace Windows::Storage::Streams;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener EasyMidiLib_testListener;
-
-//--------------------------------------------------------------------------------------------------------------------------
-
 static bool                 initialized       = false;
 static std::string          lastError         = "";
 static EasyMidiLibListener* mainListener      = 0;
@@ -45,14 +41,12 @@ static DeviceWatcher    outputsWatcher = nullptr;
 struct MidiDeviceInfo 
 {
     EasyMidiLibDevice             userDev   = {};
-    bool                          connected = false;
-    DeviceInformation             device    = 0;
 
+    DeviceInformation             device    = 0;
     IMidiOutPort                  outPort   = nullptr;
     IAsyncOperation<IMidiOutPort> outPortOp = nullptr;
     MidiInPort                    inPort    = nullptr;
     IAsyncOperation<MidiInPort>   inPortOp  = nullptr;
-
     std::vector<uint8_t>          inputQueue;
 };
 
@@ -76,10 +70,10 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
     if ( alreadyExists )
     {
         MidiDeviceInfo& d = it->second;
-        if ( !d.connected )
+        if ( !d.userDev.connected )
         {
             d.inputQueue.clear();
-            d.connected=true;
+            d.userDev.connected=true;
             if ( mainListener )
                 mainListener->deviceReconnected ( &d.userDev );
         }
@@ -94,12 +88,12 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
         d.userDev.isInput         = (&devices==&inputs);
         d.userDev.name            = name;
         d.userDev.id              = id;
+        d.userDev.connected       = true;
         d.userDev.opened          = false;
         d.userDev.userPtrParam    = 0;
         d.userDev.userIntParam    = 0;
         d.userDev.internalHandler = 0;
         d.device                  = info;
-        d.connected               = true;
         d.inputQueue.reserve(10240);
 
         devices[d.userDev.id] = d;
@@ -125,7 +119,7 @@ static void deviceDisconnected ( const DeviceInformationUpdate& info, std::map<s
     {
         MidiDeviceInfo& d = it->second;
         d.inputQueue.clear();
-        d.connected=false;
+        d.userDev.connected=false;
 
         if ( d.userDev.opened )
         {
@@ -152,7 +146,7 @@ static void devicesEnumeration ( std::map<std::string,MidiDeviceInfo>& src, std:
 
     dst.resize(0);
     for ( auto& it : src )
-        if ( it.second.connected )
+        if ( it.second.userDev.connected )
             dst.push_back(&it.second.userDev);
 }
 
@@ -319,37 +313,50 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_update ( )
+bool EasyMidiLib_update ( )
 {
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
 void EasyMidiLib_done()
 {
-    if ( outputsWatcher )
-    {
-        outputsWatcher.Stop();
-        outputsWatcher = 0;
-    }
-
+    // Stop inputs watcher
     if ( inputsWatcher )
     {
         inputsWatcher.Stop();
         inputsWatcher = 0;
     }
 
+    // Stop outputs watcher
+    if ( outputsWatcher )
+    {
+        outputsWatcher.Stop();
+        outputsWatcher = 0;
+    }
+
+    // Notify to user using listener 'callback'
     if ( initialized && mainListener )
         mainListener->libDone();
 
-    inputs .clear();
+    // Close inputs
+    for ( auto& it : inputs )
+        EasyMidiLib_inputClose ( &it.second.userDev );
+    inputs.clear();
+
+    // Close outputs
+    for ( auto& it : outputs )
+        EasyMidiLib_outputClose ( &it.second.userDev );
     outputs.clear();
 
+    // Clear enumeration lists
     userInputsEnumeration .clear();
     userOutputsEnumeration.clear();
 
-    initialized       =false;
-    mainListener      = 0;
+    // Reset status flags
+    initialized  =false;
+    mainListener = 0;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------

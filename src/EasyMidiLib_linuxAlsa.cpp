@@ -14,10 +14,6 @@
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-EasyMidiLibTestListener EasyMidiLib_testListener;
-
-//--------------------------------------------------------------------------------------------------------------------------
-
 static bool                 initialized       = false;
 static std::string          lastError         = "";
 static EasyMidiLibListener* mainListener      = 0;
@@ -400,9 +396,9 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_update ( )
+bool EasyMidiLib_update ( )
 {
-    // ALSA handles events automatically via polling thread, no manual polling needed
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
