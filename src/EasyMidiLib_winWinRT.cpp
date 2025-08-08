@@ -96,11 +96,11 @@ static void deviceConnected ( DeviceInformation const& info, std::map<std::strin
         d.device                  = info;
         d.inputQueue.reserve(10240);
 
-        devices[d.userDev.id] = d;
-        devices[d.userDev.id].userDev.internalHandler = &devices[d.userDev.id];
+        devices[id] = std::move(d);
+        devices[id].userDev.internalHandler = &devices[id];
 
         if ( mainListener )
-            mainListener->deviceConnected ( &d.userDev );
+            mainListener->deviceConnected ( &devices[id].userDev );
 
     }
 }
@@ -608,7 +608,7 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
     if ( ok ) 
     {
         if ( mainListener )
-            mainListener->deviceInData(&device->userDev, data, size );
+            mainListener->deviceOutData(&device->userDev, data, size );
 
         DataWriter writer;
         writer.WriteBytes(winrt::array_view<uint8_t const>(data, data + size));
