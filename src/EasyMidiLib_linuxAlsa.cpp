@@ -14,6 +14,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <algorithm>
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -122,77 +123,114 @@ static void enumerateDevices()
     // Get current timestamp for this enumeration
     uint64_t currentStamp = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    
-    // Enumerate using ALSA card interface
-    int card = -1;
-    while (snd_card_next(&card) >= 0 && card >= 0)
+
+    /*
+    bool hitsEnumeration = false;
+    if ( hitsEnumeration )
     {
-        snd_ctl_t* ctl;
-        char name[32];
-        snprintf(name, sizeof(name), "hw:%d", card);
-        
-        if (snd_ctl_open(&ctl, name, 0) >= 0)
+        // Other way to enum
+        void** hints = nullptr;
+        if ( snd_device_name_hint(-1, "rawmidi", &hints) >= 0 )
         {
-            snd_ctl_card_info_t* info;
-            snd_ctl_card_info_alloca(&info);
-            
-            if (snd_ctl_card_info(ctl, info) >= 0)
+            for (void** hint = hints; *hint != nullptr; ++hint)
             {
-                int device = -1;
-                while (snd_ctl_rawmidi_next_device(ctl, &device) >= 0 && device >= 0)
+                const char* name = snd_device_name_get_hint(*hint, "NAME");
+                const char* desc = snd_device_name_get_hint(*hint, "DESC");
+                const char* ioid = snd_device_name_get_hint(*hint, "IOID");
+
+                if (name)
                 {
-                    snd_rawmidi_info_t* rawmidi_info;
-                    snd_rawmidi_info_alloca(&rawmidi_info);
-                    snd_rawmidi_info_set_device(rawmidi_info, device);
+                    std::string devicePath = name;
+                    std::string deviceName = desc ? desc : name;
+                    std::string deviceId = name;
                     
-                    // Check input
-                    snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_INPUT);
-                    if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                    // Replace colons and other problematic characters in ID
+                    std::replace(deviceId.begin(), deviceId.end(), ':', '_');
+                    std::replace(deviceId.begin(), deviceId.end(), ',', '_');
+                    
+                    if (!ioid || strcmp(ioid, "Output") == 0)
                     {
-                        std::string cardName = snd_ctl_card_info_get_name(info);
-                        std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
-                        std::string fullName = cardName + ": " + deviceName;
-                        std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
-                        std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_in";
-                        
-                        deviceConnected(deviceId, fullName + " (Input)", true, devicePath, currentStamp);
+                        // Input device or bidirectional
+                        deviceConnected(deviceId + "_in", deviceName + " (Input)", true, devicePath, currentStamp);
                     }
                     
-                    // Check output
-                    snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_OUTPUT);
-                    if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                    if (!ioid || strcmp(ioid, "Input") == 0)
                     {
-                        std::string cardName = snd_ctl_card_info_get_name(info);
-                        std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
-                        std::string fullName = cardName + ": " + deviceName;
-                        std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
-                        std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_out";
-                        
-                        deviceConnected(deviceId, fullName + " (Output)", false, devicePath, currentStamp);
+                        // Output device or bidirectional  
+                        deviceConnected(deviceId + "_out", deviceName + " (Output)", false, devicePath, currentStamp);
                     }
                 }
             }
+
+            snd_device_name_free_hint(hints);
+        }
+    }
+    else
+    */
+    {
+        // Enumerate using ALSA card interface
+        int card = -1;
+        while (snd_card_next(&card) >= 0 && card >= 0)
+        {
+            snd_ctl_t* ctl;
+            char name[32];
+            snprintf(name, sizeof(name), "hw:%d", card);
             
-            snd_ctl_close(ctl);
+            if (snd_ctl_open(&ctl, name, 0) >= 0)
+            {
+                snd_ctl_card_info_t* info;
+                snd_ctl_card_info_alloca(&info);
+                
+                if (snd_ctl_card_info(ctl, info) >= 0)
+                {
+                    int device = -1;
+                    while (snd_ctl_rawmidi_next_device(ctl, &device) >= 0 && device >= 0)
+                    {
+                        snd_rawmidi_info_t* rawmidi_info;
+                        snd_rawmidi_info_alloca(&rawmidi_info);
+                        snd_rawmidi_info_set_device(rawmidi_info, device);
+                        
+                        // Check input
+                        snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_INPUT);
+                        if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                        {
+                            std::string cardName = snd_ctl_card_info_get_name(info);
+                            std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
+                            std::string fullName = cardName + ": " + deviceName;
+                            std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
+                            std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_in";
+                            
+                            deviceConnected(deviceId, fullName + " (Input)", true, devicePath, currentStamp);
+                        }
+                        
+                        // Check output
+                        snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_OUTPUT);
+                        if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                        {
+                            std::string cardName = snd_ctl_card_info_get_name(info);
+                            std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
+                            std::string fullName = cardName + ": " + deviceName;
+                            std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
+                            std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_out";
+                            
+                            deviceConnected(deviceId, fullName + " (Output)", false, devicePath, currentStamp);
+                        }
+                    }
+                }
+                
+                snd_ctl_close(ctl);
+            }
         }
     }
     
     // Check for disconnected devices (those without current stamp)
     for (auto& it : inputs)
-    {
         if (it.second.enumerationStamp != currentStamp && it.second.userDev.connected)
-        {
             deviceDisconnected(it.first, true);
-        }
-    }
     
     for (auto& it : outputs)
-    {
         if (it.second.enumerationStamp != currentStamp && it.second.userDev.connected)
-        {
             deviceDisconnected(it.first, false);
-        }
-    }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -623,7 +661,7 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
     if ( ok ) 
     {
         if ( mainListener )
-            mainListener->deviceInData(&device->userDev, data, size );
+            mainListener->deviceOutData(&device->userDev, data, size );
 
         // Send raw MIDI data directly
         ssize_t bytes_written = snd_rawmidi_write(device->rawmidi, data, size);
