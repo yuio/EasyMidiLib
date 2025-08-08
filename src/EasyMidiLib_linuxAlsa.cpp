@@ -32,6 +32,7 @@ struct MidiDeviceInfo
     std::vector<uint8_t>          inputQueue;
     bool                          inputThreadRunning = false;
     std::thread                   inputThread;
+    uint64_t                      enumerationStamp = 0;
 };
 
 static std::mutex                           devicesMutex;
@@ -43,10 +44,8 @@ static std::thread enumThread;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void deviceConnected ( const std::string& id, const std::string& name, bool isInput, const std::string& devicePath )
+static void deviceConnected ( const std::string& id, const std::string& name, bool isInput, const std::string& devicePath, uint64_t stamp )
 {
-    std::lock_guard<std::mutex> lock(devicesMutex);
-
     std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
 
     auto it = devices.find(id);
@@ -55,6 +54,7 @@ static void deviceConnected ( const std::string& id, const std::string& name, bo
     if ( alreadyExists )
     {
         MidiDeviceInfo& d = it->second;
+        d.enumerationStamp = stamp;
         if ( !d.userDev.connected )
         {
             d.inputQueue.clear();
@@ -76,13 +76,14 @@ static void deviceConnected ( const std::string& id, const std::string& name, bo
         d.userDev.userIntParam    = 0;
         d.userDev.internalHandler = 0;
         d.devicePath              = devicePath;
+        d.enumerationStamp        = stamp;
         d.inputQueue.reserve(10240);
 
-        devices[d.userDev.id] = std::move(d);
-        devices[d.userDev.id].userDev.internalHandler = &devices[d.userDev.id];
+        devices[id] = std::move(d);
+        devices[id].userDev.internalHandler = &devices[id];
 
         if ( mainListener )
-            mainListener->deviceConnected ( &devices[d.userDev.id].userDev );
+            mainListener->deviceConnected ( &devices[id].userDev );
     }
 }
 
@@ -90,8 +91,6 @@ static void deviceConnected ( const std::string& id, const std::string& name, bo
 
 static void deviceDisconnected ( const std::string& id, bool isInput )
 {
-    std::lock_guard<std::mutex> lock(devicesMutex);
-
     std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
 
     auto it = devices.find(id);
@@ -118,6 +117,12 @@ static void deviceDisconnected ( const std::string& id, bool isInput )
 
 static void enumerateDevices()
 {
+    std::lock_guard<std::mutex> lock(devicesMutex);
+    
+    // Get current timestamp for this enumeration
+    uint64_t currentStamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    
     // Enumerate using ALSA card interface
     int card = -1;
     while (snd_card_next(&card) >= 0 && card >= 0)
@@ -150,7 +155,7 @@ static void enumerateDevices()
                         std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
                         std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_in";
                         
-                        deviceConnected(deviceId, fullName + " (Input)", true, devicePath);
+                        deviceConnected(deviceId, fullName + " (Input)", true, devicePath, currentStamp);
                     }
                     
                     // Check output
@@ -163,12 +168,29 @@ static void enumerateDevices()
                         std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
                         std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_out";
                         
-                        deviceConnected(deviceId, fullName + " (Output)", false, devicePath);
+                        deviceConnected(deviceId, fullName + " (Output)", false, devicePath, currentStamp);
                     }
                 }
             }
             
             snd_ctl_close(ctl);
+        }
+    }
+    
+    // Check for disconnected devices (those without current stamp)
+    for (auto& it : inputs)
+    {
+        if (it.second.enumerationStamp != currentStamp && it.second.userDev.connected)
+        {
+            deviceDisconnected(it.first, true);
+        }
+    }
+    
+    for (auto& it : outputs)
+    {
+        if (it.second.enumerationStamp != currentStamp && it.second.userDev.connected)
+        {
+            deviceDisconnected(it.first, false);
         }
     }
 }
