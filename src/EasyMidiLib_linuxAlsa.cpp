@@ -198,9 +198,9 @@ static void enumerateDevices()
                             std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
                             std::string fullName = cardName + ": " + deviceName;
                             std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
-                            std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_in";
+                            std::string deviceId = "in_card" + std::to_string(card) + "_dev" + std::to_string(device) + "_" + deviceName;
                             
-                            deviceConnected(deviceId, fullName + " (Input)", true, devicePath, currentStamp);
+                            deviceConnected(deviceId, fullName, true, devicePath, currentStamp);
                         }
                         
                         // Check output
@@ -211,9 +211,9 @@ static void enumerateDevices()
                             std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
                             std::string fullName = cardName + ": " + deviceName;
                             std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
-                            std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_out";
+                            std::string deviceId = "out_card" + std::to_string(card) + "_dev" + std::to_string(device) + "_" + deviceName;
                             
-                            deviceConnected(deviceId, fullName + " (Output)", false, devicePath, currentStamp);
+                            deviceConnected(deviceId, fullName, false, devicePath, currentStamp);
                         }
                     }
                 }
