@@ -17,19 +17,19 @@ if [ "$CONFIG" = "Debug" ]; then
     echo "Compiling library (Debug)..."
     clang++ -c -g -O0 -Iinclude src/EasyMidiLib.cpp -o _intermediate/Debug/EasyMidiLib.o
     clang++ -c -g -O0 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o _intermediate/Debug/EasyMidiLib_linuxAlsa.o
-    ar rcs lib/linux/x64/Debug/EasyMidiLib.a _intermediate/Debug/EasyMidiLib.o _intermediate/Debug/EasyMidiLib_linuxAlsa.o
+    ar rcs lib/linux/x64/Debug/libEasyMidiLib.a _intermediate/Debug/EasyMidiLib.o _intermediate/Debug/EasyMidiLib_linuxAlsa.o
     
     echo "Compiling test app (Debug)..."
-    clang++ -g -O0 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Debug/EasyMidiLib.a -lasound -lpthread -o bin/Debug/EasyMidiLibTest
+    clang++ -g -O0 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Debug/libEasyMidiLib.a -lasound -lpthread -o bin/Debug/EasyMidiLibTest
 else
     # Release build
     echo "Compiling library (Release)..."
     clang++ -c -O2 -Iinclude src/EasyMidiLib.cpp -o _intermediate/Release/EasyMidiLib.o
     clang++ -c -O2 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o _intermediate/Release/EasyMidiLib_linuxAlsa.o
-    ar rcs lib/linux/x64/Release/EasyMidiLib.a _intermediate/Release/EasyMidiLib.o _intermediate/Release/EasyMidiLib_linuxAlsa.o
+    ar rcs lib/linux/x64/Release/libEasyMidiLib.a _intermediate/Release/EasyMidiLib.o _intermediate/Release/EasyMidiLib_linuxAlsa.o
     
     echo "Compiling test app (Release)..."
-    clang++ -O2 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Release/EasyMidiLib.a -lasound -lpthread -o bin/Release/EasyMidiLibTest
+    clang++ -O2 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Release/libEasyMidiLib.a -lasound -lpthread -o bin/Release/EasyMidiLibTest
 fi
 
 echo "Linux $CONFIG build completed!"
