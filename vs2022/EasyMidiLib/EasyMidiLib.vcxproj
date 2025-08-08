@@ -69,12 +69,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>..\..\lib\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir>..\..\lib\windows\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>..\..\_intermediate\$(ProjectName)_$(Platform)_$(Configuration)\</IntDir>
     <TargetName>$(ProjectName)</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>..\..\lib\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir>..\..\lib\windows\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>..\..\_intermediate\$(ProjectName)_$(Platform)_$(Configuration)\</IntDir>
     <TargetName>$(ProjectName)</TargetName>
   </PropertyGroup>
