@@ -10,8 +10,9 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": true,
+            "externalConsole": false,
             "MIMode": "lldb",
+            "MIDebuggerPath": "/usr/bin/lldb",
             "setupCommands": [
                 {
                     "description": "Force ARM64 architecture",
@@ -30,8 +31,9 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": true,
+            "externalConsole": false,
             "MIMode": "lldb",
+            "MIDebuggerPath": "/usr/bin/lldb",
             "setupCommands": [
                 {
                     "description": "Force ARM64 architecture",
@@ -45,12 +47,12 @@
             "name": "Linux Test Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/x64/Debug/EasyMidiLibTest",
+            "program": "${workspaceFolder}/bin/Debug/EasyMidiLibTest",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": true,
+            "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
                 {
@@ -65,12 +67,12 @@
             "name": "Linux Test Release",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/x64/Release/EasyMidiLibTest",
+            "program": "${workspaceFolder}/bin/Release/EasyMidiLibTest",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": true,
+            "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
                 {

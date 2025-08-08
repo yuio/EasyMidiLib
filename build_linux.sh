@@ -8,25 +8,28 @@ fi
 echo "Building Linux $CONFIG configuration..."
 
 # Create directories
-mkdir -p lib/x64/$CONFIG
-mkdir -p bin/x64/$CONFIG
+mkdir -p lib/linux/x64/$CONFIG
+mkdir -p bin/$CONFIG
+mkdir -p _intermediate/$CONFIG
 
 if [ "$CONFIG" = "Debug" ]; then
     # Debug build
     echo "Compiling library (Debug)..."
-    g++ -c -g -O0 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o lib/x64/Debug/EasyMidiLib.o
-    ar rcs lib/x64/Debug/EasyMidiLib.a lib/x64/Debug/EasyMidiLib.o
+    clang++ -c -g -O0 -Iinclude src/EasyMidiLib.cpp -o _intermediate/Debug/EasyMidiLib.o
+    clang++ -c -g -O0 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o _intermediate/Debug/EasyMidiLib_linuxAlsa.o
+    ar rcs lib/linux/x64/Debug/EasyMidiLib.a _intermediate/Debug/EasyMidiLib.o _intermediate/Debug/EasyMidiLib_linuxAlsa.o
     
     echo "Compiling test app (Debug)..."
-    g++ -g -O0 -Iinclude src/EasyMidiLibTest.cpp lib/x64/Debug/EasyMidiLib.a -lasound -lpthread -o bin/x64/Debug/EasyMidiLibTest
+    clang++ -g -O0 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Debug/EasyMidiLib.a -lasound -lpthread -o bin/Debug/EasyMidiLibTest
 else
     # Release build
     echo "Compiling library (Release)..."
-    g++ -c -O2 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o lib/x64/Release/EasyMidiLib.o
-    ar rcs lib/x64/Release/EasyMidiLib.a lib/x64/Release/EasyMidiLib.o
+    clang++ -c -O2 -Iinclude src/EasyMidiLib.cpp -o _intermediate/Release/EasyMidiLib.o
+    clang++ -c -O2 -Iinclude src/EasyMidiLib_linuxAlsa.cpp -o _intermediate/Release/EasyMidiLib_linuxAlsa.o
+    ar rcs lib/linux/x64/Release/EasyMidiLib.a _intermediate/Release/EasyMidiLib.o _intermediate/Release/EasyMidiLib_linuxAlsa.o
     
     echo "Compiling test app (Release)..."
-    g++ -O2 -Iinclude src/EasyMidiLibTest.cpp lib/x64/Release/EasyMidiLib.a -lasound -lpthread -o bin/x64/Release/EasyMidiLibTest
+    clang++ -O2 -Iinclude src/EasyMidiLibTest.cpp lib/linux/x64/Release/EasyMidiLib.a -lasound -lpthread -o bin/Release/EasyMidiLibTest
 fi
 
 echo "Linux $CONFIG build completed!"

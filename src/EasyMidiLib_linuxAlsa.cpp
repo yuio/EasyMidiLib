@@ -1,16 +1,19 @@
-#if defined(__linux__)
+#ifdef __linux__
 
 #include "EasyMidiLib.h"
 #include <alsa/asoundlib.h>
-
-#include <stdarg.h>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <map>
 #include <vector>
-#include <mutex>
 #include <thread>
-#include <atomic>
+#include <mutex>
+#include <chrono>
+#include <cstdarg>
+#include <cstring>
+#include <dirent.h>
+#include <sys/stat.h>
 
 //--------------------------------------------------------------------------------------------------------------------------
 
@@ -20,232 +23,164 @@ static EasyMidiLibListener* mainListener      = 0;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static snd_seq_t*           sequencer         = nullptr;
-static int                  clientId          = -1;
-static int                  inputPortId       = -1;
-static int                  outputPortId      = -1;
-static std::atomic<bool>    pollThreadRunning{false};
-static std::thread          pollThread;
-
 struct MidiDeviceInfo 
 {
-    EasyMidiLibDevice   userDev         = {};
-    bool                connected       = true;
-    snd_seq_addr_t      address         = {};
-    bool                subscribed      = false;
+    EasyMidiLibDevice             userDev   = {};
     
-    std::vector<uint8_t> inputQueue;
+    snd_rawmidi_t*                rawmidi   = nullptr;
+    std::string                   devicePath;
+    std::vector<uint8_t>          inputQueue;
+    bool                          inputThreadRunning = false;
+    std::thread                   inputThread;
 };
 
 static std::mutex                           devicesMutex;
 static std::map<std::string,MidiDeviceInfo> inputs ;
 static std::map<std::string,MidiDeviceInfo> outputs;
 
-//--------------------------------------------------------------------------------------------------------------------------
-
-static std::string GetPortName(int client, int port) 
-{
-    snd_seq_client_info_t *clientInfo;
-    snd_seq_port_info_t *portInfo;
-    
-    snd_seq_client_info_alloca(&clientInfo);
-    snd_seq_port_info_alloca(&portInfo);
-    
-    if (snd_seq_get_any_client_info(sequencer, client, clientInfo) == 0 &&
-        snd_seq_get_any_port_info(sequencer, client, port, portInfo) == 0) {
-        
-        const char* clientName = snd_seq_client_info_get_name(clientInfo);
-        const char* portName = snd_seq_port_info_get_name(portInfo);
-        
-        return std::string(clientName) + " " + std::string(portName);
-    }
-    return "Unknown Device";
-}
+static bool enumThreadRunning = false;
+static std::thread enumThread;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static std::string GetPortID(int client, int port) 
+static void deviceConnected ( const std::string& id, const std::string& name, bool isInput, const std::string& devicePath )
 {
-    return std::to_string(client) + ":" + std::to_string(port);
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-static void ProcessMidiEvent(snd_seq_event_t *ev)
-{
-    if (!mainListener) return;
-    
-    std::string portId = GetPortID(ev->source.client, ev->source.port);
-    
     std::lock_guard<std::mutex> lock(devicesMutex);
-    auto it = inputs.find(portId);
-    if (it == inputs.end()) return;
+
+    std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
+
+    auto it = devices.find(id);
+    bool alreadyExists = (it != devices.end());
     
-    MidiDeviceInfo* device = &it->second;
-    if (!device->userDev.opened) return;
-    
-    // Convert ALSA event to raw MIDI data
-    unsigned char midiData[4];
-    int dataSize = 0;
-    
-    switch (ev->type) {
-        case SND_SEQ_EVENT_NOTEON:
-            midiData[0] = 0x90 | ev->data.note.channel;
-            midiData[1] = ev->data.note.note;
-            midiData[2] = ev->data.note.velocity;
-            dataSize = 3;
-            break;
-        case SND_SEQ_EVENT_NOTEOFF:
-            midiData[0] = 0x80 | ev->data.note.channel;
-            midiData[1] = ev->data.note.note;
-            midiData[2] = ev->data.note.velocity;
-            dataSize = 3;
-            break;
-        case SND_SEQ_EVENT_CONTROLLER:
-            midiData[0] = 0xB0 | ev->data.control.channel;
-            midiData[1] = ev->data.control.param;
-            midiData[2] = ev->data.control.value;
-            dataSize = 3;
-            break;
-        case SND_SEQ_EVENT_PGMCHANGE:
-            midiData[0] = 0xC0 | ev->data.control.channel;
-            midiData[1] = ev->data.control.value;
-            dataSize = 2;
-            break;
-        case SND_SEQ_EVENT_PITCHBEND:
-            midiData[0] = 0xE0 | ev->data.control.channel;
-            midiData[1] = ev->data.control.value & 0x7F;
-            midiData[2] = (ev->data.control.value >> 7) & 0x7F;
-            dataSize = 3;
-            break;
-        case SND_SEQ_EVENT_SYSEX:
-            if (ev->data.ext.len > 0 && ev->data.ext.len <= sizeof(midiData)) {
-                memcpy(midiData, ev->data.ext.ptr, ev->data.ext.len);
-                dataSize = ev->data.ext.len;
-            }
-            break;
-    }
-    
-    if (dataSize > 0) {
-        // Add data to input queue
-        size_t prevSize = device->inputQueue.size();
-        device->inputQueue.resize(prevSize + dataSize);
-        memcpy(device->inputQueue.data() + prevSize, midiData, dataSize);
-        
-        // Process accumulated data
-        size_t consumedBytes = mainListener->deviceInData(&device->userDev, device->inputQueue.data(), device->inputQueue.size());
-        if (consumedBytes > 0) {
-            if (consumedBytes > device->inputQueue.size())
-                consumedBytes = device->inputQueue.size();
-            
-            device->inputQueue.erase(device->inputQueue.begin(), device->inputQueue.begin() + consumedBytes);
+    if ( alreadyExists )
+    {
+        MidiDeviceInfo& d = it->second;
+        if ( !d.userDev.connected )
+        {
+            d.inputQueue.clear();
+            d.userDev.connected = true;
+            d.devicePath = devicePath;
+            if ( mainListener )
+                mainListener->deviceReconnected ( &d.userDev );
         }
+    }
+    else
+    {
+        MidiDeviceInfo d;
+        d.userDev.isInput         = isInput;
+        d.userDev.name            = name;
+        d.userDev.id              = id;
+        d.userDev.connected       = true;
+        d.userDev.opened          = false;
+        d.userDev.userPtrParam    = 0;
+        d.userDev.userIntParam    = 0;
+        d.userDev.internalHandler = 0;
+        d.devicePath              = devicePath;
+        d.inputQueue.reserve(10240);
+
+        devices[d.userDev.id] = std::move(d);
+        devices[d.userDev.id].userDev.internalHandler = &devices[d.userDev.id];
+
+        if ( mainListener )
+            mainListener->deviceConnected ( &devices[d.userDev.id].userDev );
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void PollThreadFunction()
+static void deviceDisconnected ( const std::string& id, bool isInput )
 {
-    int npfd = snd_seq_poll_descriptors_count(sequencer, POLLIN);
-    struct pollfd* pfd = (struct pollfd*)alloca(npfd * sizeof(struct pollfd));
-    snd_seq_poll_descriptors(sequencer, pfd, npfd, POLLIN);
-    
-    while (pollThreadRunning) {
-        if (poll(pfd, npfd, 100) > 0) {
-            snd_seq_event_t *ev;
-            while (snd_seq_event_input(sequencer, &ev) >= 0) {
-                switch (ev->type) {
-                    case SND_SEQ_EVENT_NOTEON:
-                    case SND_SEQ_EVENT_NOTEOFF:
-                    case SND_SEQ_EVENT_CONTROLLER:
-                    case SND_SEQ_EVENT_PGMCHANGE:
-                    case SND_SEQ_EVENT_PITCHBEND:
-                    case SND_SEQ_EVENT_SYSEX:
-                        ProcessMidiEvent(ev);
-                        break;
-                    case SND_SEQ_EVENT_PORT_START:
-                    case SND_SEQ_EVENT_PORT_EXIT:
-                        // Handle port connect/disconnect if needed
-                        break;
+    std::lock_guard<std::mutex> lock(devicesMutex);
+
+    std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
+
+    auto it = devices.find(id);
+    if ( it != devices.end() )
+    {
+        MidiDeviceInfo& d = it->second;
+        d.inputQueue.clear();
+        d.userDev.connected = false;
+
+        if ( d.userDev.opened )
+        {
+            if ( d.userDev.isInput )
+                EasyMidiLib_inputClose ( &d.userDev );
+            else
+                EasyMidiLib_outputClose ( &d.userDev );
+        }
+        
+        if ( mainListener )
+            mainListener->deviceDisconnected ( &d.userDev );
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void enumerateDevices()
+{
+    // Enumerate using ALSA card interface
+    int card = -1;
+    while (snd_card_next(&card) >= 0 && card >= 0)
+    {
+        snd_ctl_t* ctl;
+        char name[32];
+        snprintf(name, sizeof(name), "hw:%d", card);
+        
+        if (snd_ctl_open(&ctl, name, 0) >= 0)
+        {
+            snd_ctl_card_info_t* info;
+            snd_ctl_card_info_alloca(&info);
+            
+            if (snd_ctl_card_info(ctl, info) >= 0)
+            {
+                int device = -1;
+                while (snd_ctl_rawmidi_next_device(ctl, &device) >= 0 && device >= 0)
+                {
+                    snd_rawmidi_info_t* rawmidi_info;
+                    snd_rawmidi_info_alloca(&rawmidi_info);
+                    snd_rawmidi_info_set_device(rawmidi_info, device);
+                    
+                    // Check input
+                    snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_INPUT);
+                    if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                    {
+                        std::string cardName = snd_ctl_card_info_get_name(info);
+                        std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
+                        std::string fullName = cardName + ": " + deviceName;
+                        std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
+                        std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_in";
+                        
+                        deviceConnected(deviceId, fullName + " (Input)", true, devicePath);
+                    }
+                    
+                    // Check output
+                    snd_rawmidi_info_set_stream(rawmidi_info, SND_RAWMIDI_STREAM_OUTPUT);
+                    if (snd_ctl_rawmidi_info(ctl, rawmidi_info) >= 0)
+                    {
+                        std::string cardName = snd_ctl_card_info_get_name(info);
+                        std::string deviceName = snd_rawmidi_info_get_name(rawmidi_info);
+                        std::string fullName = cardName + ": " + deviceName;
+                        std::string devicePath = "hw:" + std::to_string(card) + "," + std::to_string(device);
+                        std::string deviceId = "card" + std::to_string(card) + "_dev" + std::to_string(device) + "_out";
+                        
+                        deviceConnected(deviceId, fullName + " (Output)", false, devicePath);
+                    }
                 }
-                snd_seq_free_event(ev);
             }
+            
+            snd_ctl_close(ctl);
         }
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void EnumerateDevices() 
+static void enumerationThreadFunc()
 {
-    snd_seq_client_info_t *clientInfo;
-    snd_seq_port_info_t *portInfo;
-    
-    snd_seq_client_info_alloca(&clientInfo);
-    snd_seq_port_info_alloca(&portInfo);
-    
-    snd_seq_client_info_set_client(clientInfo, -1);
-    
-    while (snd_seq_query_next_client(sequencer, clientInfo) >= 0) {
-        int client = snd_seq_client_info_get_client(clientInfo);
-        if (client == clientId) continue; // Skip our own client
-        
-        snd_seq_port_info_set_client(portInfo, client);
-        snd_seq_port_info_set_port(portInfo, -1);
-        
-        while (snd_seq_query_next_port(sequencer, portInfo) >= 0) {
-            int port = snd_seq_port_info_get_port(portInfo);
-            unsigned int caps = snd_seq_port_info_get_capability(portInfo);
-            
-            std::string id = GetPortID(client, port);
-            std::string name = GetPortName(client, port);
-            
-            // Check if it's an input source (can read from)
-            if ((caps & SND_SEQ_PORT_CAP_READ) && (caps & SND_SEQ_PORT_CAP_SUBS_READ)) {
-                MidiDeviceInfo d;
-                d.userDev.isInput         = true;
-                d.userDev.name            = name;
-                d.userDev.id              = id;
-                d.userDev.opened          = false;
-                d.userDev.userPtrParam    = 0;
-                d.userDev.userIntParam    = 0;
-                d.userDev.internalHandler = 0;
-                d.address.client          = client;
-                d.address.port            = port;
-                d.connected               = true;
-                d.subscribed              = false;
-                d.inputQueue.reserve(10240);
-                
-                inputs[id] = d;
-                inputs[id].userDev.internalHandler = &inputs[id];
-                
-                if (mainListener)
-                    mainListener->deviceConnected(&inputs[id].userDev);
-            }
-            
-            // Check if it's an output destination (can write to)
-            if ((caps & SND_SEQ_PORT_CAP_WRITE) && (caps & SND_SEQ_PORT_CAP_SUBS_WRITE)) {
-                MidiDeviceInfo d;
-                d.userDev.isInput         = false;
-                d.userDev.name            = name;
-                d.userDev.id              = id;
-                d.userDev.opened          = false;
-                d.userDev.userPtrParam    = 0;
-                d.userDev.userIntParam    = 0;
-                d.userDev.internalHandler = 0;
-                d.address.client          = client;
-                d.address.port            = port;
-                d.connected               = true;
-                d.subscribed              = false;
-                
-                outputs[id] = d;
-                outputs[id].userDev.internalHandler = &outputs[id];
-                
-                if (mainListener)
-                    mainListener->deviceConnected(&outputs[id].userDev);
-            }
-        }
+    while (enumThreadRunning)
+    {
+        enumerateDevices();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     }
 }
 
@@ -257,7 +192,7 @@ static void devicesEnumeration ( std::map<std::string,MidiDeviceInfo>& src, std:
 
     dst.resize(0);
     for ( auto& it : src )
-        if ( it.second.connected )
+        if ( it.second.userDev.connected )
             dst.push_back(&it.second.userDev);
 }
 
@@ -330,64 +265,30 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
     if (initialized) return true;
 
     bool ok = true;
+
+    // Set listener
     mainListener = listener;
 
-    // Open ALSA sequencer
-    if (ok) {
-        int err = snd_seq_open(&sequencer, "default", SND_SEQ_OPEN_DUPLEX, 0);
-        if (err < 0) {
-            setLastErrorf("Failed to open ALSA sequencer: %s", snd_strerror(err));
-            ok = false;
-        }
+    // Initial device enumeration
+    if ( ok )
+        enumerateDevices();
+
+    // Start enumeration thread for device monitoring
+    if ( ok )
+    {
+        enumThreadRunning = true;
+        enumThread = std::thread(enumerationThreadFunc);
     }
 
-    // Set client name
-    if (ok) {
-        snd_seq_set_client_name(sequencer, "EasyMidiLib");
-        clientId = snd_seq_client_id(sequencer);
-    }
-
-    // Create input port
-    if (ok) {
-        inputPortId = snd_seq_create_simple_port(sequencer, "EasyMidiLib Input",
-                                                 SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
-                                                 SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
-        if (inputPortId < 0) {
-            setLastErrorf("Failed to create input port: %s", snd_strerror(inputPortId));
-            ok = false;
-        }
-    }
-
-    // Create output port
-    if (ok) {
-        outputPortId = snd_seq_create_simple_port(sequencer, "EasyMidiLib Output",
-                                                  SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ,
-                                                  SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
-        if (outputPortId < 0) {
-            setLastErrorf("Failed to create output port: %s", snd_strerror(outputPortId));
-            ok = false;
-        }
-    }
-
-    // Start polling thread
-    if (ok) {
-        pollThreadRunning = true;
-        pollThread = std::thread(PollThreadFunction);
-    }
-
-    // Enumerate existing devices
-    if (ok) {
-        EnumerateDevices();
-    }
-
-    // Finalize initialization
-    if (!ok) {
+    // Done if errors or set as initialized if ok
+    if (!ok)
         EasyMidiLib_done();
-    } else {
+    else
+    {
         initialized = true;
-        EasyMidiLib_updateInputsEnumeration();
+        EasyMidiLib_updateInputsEnumeration ();
         EasyMidiLib_updateOutputsEnumeration();
-        if (mainListener)
+        if ( mainListener )
             mainListener->libInit();
     }
 
@@ -405,34 +306,78 @@ bool EasyMidiLib_update ( )
 
 void EasyMidiLib_done()
 {
-    // Stop polling thread
-    if (pollThreadRunning) {
-        pollThreadRunning = false;
-        if (pollThread.joinable()) {
-            pollThread.join();
-        }
+    // Stop enumeration thread
+    if (enumThreadRunning)
+    {
+        enumThreadRunning = false;
+        if (enumThread.joinable())
+            enumThread.join();
     }
 
-    // Close sequencer
-    if (sequencer) {
-        snd_seq_close(sequencer);
-        sequencer = nullptr;
-    }
-
-    if (initialized && mainListener)
+    // Notify to user using listener 'callback'
+    if ( initialized && mainListener )
         mainListener->libDone();
 
-    inputs .clear();
+    // Close inputs
+    for ( auto& it : inputs )
+        EasyMidiLib_inputClose ( &it.second.userDev );
+    inputs.clear();
+
+    // Close outputs
+    for ( auto& it : outputs )
+        EasyMidiLib_outputClose ( &it.second.userDev );
     outputs.clear();
 
+    // Clear enumeration lists
     userInputsEnumeration .clear();
     userOutputsEnumeration.clear();
 
-    initialized   = false;
-    mainListener  = 0;
-    clientId      = -1;
-    inputPortId   = -1;
-    outputPortId  = -1;
+    // Reset status flags
+    initialized  = false;
+    mainListener = 0;
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void inputThreadFunc(MidiDeviceInfo* device)
+{
+    unsigned char buffer[256];
+    
+    while (device->inputThreadRunning)
+    {
+        ssize_t bytes_read = snd_rawmidi_read(device->rawmidi, buffer, sizeof(buffer));
+        
+        if (bytes_read > 0)
+        {
+            std::lock_guard<std::mutex> lock(devicesMutex);
+            
+            size_t prevSize = device->inputQueue.size();
+            device->inputQueue.resize(prevSize + bytes_read);
+            memcpy(device->inputQueue.data() + prevSize, buffer, bytes_read);
+            
+            if (mainListener)
+            {
+                size_t consumedBytes = mainListener->deviceInData(&device->userDev, device->inputQueue.data(), device->inputQueue.size());
+                if (consumedBytes > 0)
+                {
+                    if (consumedBytes > device->inputQueue.size())
+                        consumedBytes = device->inputQueue.size();
+                    
+                    device->inputQueue.erase(device->inputQueue.begin(), device->inputQueue.begin() + consumedBytes);
+                }
+            }
+        }
+        else if (bytes_read < 0 && bytes_read != -EAGAIN)
+        {
+            // Error occurred
+            break;
+        }
+        else
+        {
+            // No data available, sleep briefly
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
@@ -468,26 +413,33 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
         if ( device->userDev.opened )
         {
             ok = false;
-            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );        
+            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
         }
     }
 
-    // Subscribe to the source
+    // Open raw MIDI device for input
     if ( ok )
     {
-        int err = snd_seq_connect_from(sequencer, inputPortId, device->address.client, device->address.port);
-        if (err < 0) {
-            setLastErrorf("Failed to connect to MIDI source:%s(%s) error:%s", dev->name.c_str(), dev->id.c_str(), snd_strerror(err));
+        int err = snd_rawmidi_open(&device->rawmidi, nullptr, device->devicePath.c_str(), SND_RAWMIDI_NONBLOCK);
+        if (err < 0) 
+        {
+            setLastErrorf("Failed to open raw MIDI device for input: %s", snd_strerror(err));
             ok = false;
-        } else {
-            device->subscribed           = true;
-            device->userDev.userPtrParam = userPtrParam;
-            device->userDev.userIntParam = userIntParam;
-            device->userDev.opened       = true;
-
-            if (mainListener)
-                mainListener->deviceOpen(dev);
         }
+    }
+
+    // Start input thread
+    if ( ok )
+    {
+        device->userDev.userPtrParam = userPtrParam;
+        device->userDev.userIntParam = userIntParam;
+        device->userDev.opened       = true;
+
+        if ( mainListener )
+            mainListener->deviceOpen(dev);
+
+        device->inputThreadRunning = true;
+        device->inputThread = std::thread(inputThreadFunc, device);
     }
 
     // Close if errors
@@ -505,11 +457,21 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
 void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
 {
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    bool wasOpened = device->userDev.opened ;
+    bool wasOpened = device->userDev.opened;
 
-    if (device->subscribed) {
-        snd_seq_disconnect_from(sequencer, inputPortId, device->address.client, device->address.port);
-        device->subscribed = false;
+    // Stop input thread
+    if (device->inputThreadRunning)
+    {
+        device->inputThreadRunning = false;
+        if (device->inputThread.joinable())
+            device->inputThread.join();
+    }
+
+    // Close raw MIDI device
+    if (device->rawmidi)
+    {
+        snd_rawmidi_close(device->rawmidi);
+        device->rawmidi = nullptr;
     }
 
     device->userDev.opened = false;
@@ -558,22 +520,25 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, 
         }
     }
 
-    // Subscribe to the destination
+    // Open raw MIDI device for output
     if ( ok )
     {
-        int err = snd_seq_connect_to(sequencer, outputPortId, device->address.client, device->address.port);
-        if (err < 0) {
-            setLastErrorf("Failed to connect to MIDI destination:%s(%s) error:%s", dev->name.c_str(), dev->id.c_str(), snd_strerror(err));
+        int err = snd_rawmidi_open(nullptr, &device->rawmidi, device->devicePath.c_str(), SND_RAWMIDI_NONBLOCK);
+        if (err < 0) 
+        {
+            setLastErrorf("Failed to open raw MIDI device for output: %s", snd_strerror(err));
             ok = false;
-        } else {
-            device->subscribed           = true;
-            device->userDev.opened       = true;
-            device->userDev.userPtrParam = userPtrParam;
-            device->userDev.userIntParam = userIntParam;
-
-            if (mainListener)
-                mainListener->deviceOpen(dev);
         }
+    }
+
+    if ( ok )
+    {
+        device->userDev.opened       = true;
+        device->userDev.userPtrParam = userPtrParam;
+        device->userDev.userIntParam = userIntParam;
+
+        if ( mainListener )
+            mainListener->deviceOpen(dev);
     }
 
     // Close if errors
@@ -593,9 +558,11 @@ void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev )
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
     bool wasOpened = device->userDev.opened;
 
-    if (device->subscribed) {
-        snd_seq_disconnect_to(sequencer, outputPortId, device->address.client, device->address.port);
-        device->subscribed = false;
+    // Close raw MIDI device
+    if (device->rawmidi)
+    {
+        snd_rawmidi_close(device->rawmidi);
+        device->rawmidi = nullptr;
     }
 
     device->userDev.opened = false;
@@ -634,72 +601,25 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
     if ( ok ) 
     {
         if ( mainListener )
-            mainListener->deviceOutData(&device->userDev, data, size );
+            mainListener->deviceInData(&device->userDev, data, size );
 
-        // Send raw MIDI data as SysEx event (most generic way)
-        snd_seq_event_t ev;
-        snd_seq_ev_clear(&ev);
+        // Send raw MIDI data directly
+        ssize_t bytes_written = snd_rawmidi_write(device->rawmidi, data, size);
         
-        snd_seq_ev_set_source(&ev, outputPortId);
-        snd_seq_ev_set_subs(&ev);
-        snd_seq_ev_set_direct(&ev);
-        
-        if (size >= 1) {
-            // Try to parse common MIDI messages for better compatibility
-            uint8_t status = data[0];
-            uint8_t channel = status & 0x0F;
-            
-            switch (status & 0xF0) {
-                case 0x80: // Note Off
-                    if (size >= 3) {
-                        snd_seq_ev_set_noteoff(&ev, channel, data[1], data[2]);
-                        break;
-                    }
-                    goto send_sysex;
-                    
-                case 0x90: // Note On
-                    if (size >= 3) {
-                        snd_seq_ev_set_noteon(&ev, channel, data[1], data[2]);
-                        break;
-                    }
-                    goto send_sysex;
-                    
-                case 0xB0: // Control Change
-                    if (size >= 3) {
-                        snd_seq_ev_set_controller(&ev, channel, data[1], data[2]);
-                        break;
-                    }
-                    goto send_sysex;
-                    
-                case 0xC0: // Program Change
-                    if (size >= 2) {
-                        snd_seq_ev_set_pgmchange(&ev, channel, data[1]);
-                        break;
-                    }
-                    goto send_sysex;
-                    
-                case 0xE0: // Pitch Bend
-                    if (size >= 3) {
-                        int value = data[1] | (data[2] << 7);
-                        snd_seq_ev_set_pitchbend(&ev, channel, value - 8192);
-                        break;
-                    }
-                    goto send_sysex;
-                    
-                default:
-                send_sysex:
-                    // Send as SysEx for everything else
-                    snd_seq_ev_set_sysex(&ev, size, (void*)data);
-                    break;
-            }
-        }
-        
-        int err = snd_seq_event_output(sequencer, &ev);
-        if (err < 0) {
-            setLastErrorf("Failed to send MIDI event:%s(%s) error:%s", dev->name.c_str(), dev->id.c_str(), snd_strerror(err));
+        if (bytes_written < 0)
+        {
+            setLastErrorf("Failed to write MIDI data: %s", snd_strerror(bytes_written));
             ok = false;
-        } else {
-            snd_seq_drain_output(sequencer);
+        }
+        else if ((size_t)bytes_written != size)
+        {
+            setLastErrorf("Incomplete MIDI data write: wrote %zd of %zu bytes", bytes_written, size);
+            ok = false;
+        }
+        else
+        {
+            // Ensure data is sent immediately
+            snd_rawmidi_drain(device->rawmidi);
         }
     }
 
@@ -708,4 +628,4 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-#endif //defined(__linux__)
+#endif //__linux__
