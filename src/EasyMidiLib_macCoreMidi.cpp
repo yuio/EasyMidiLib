@@ -27,12 +27,11 @@ static MIDIPortRef          outputPort         = 0;
 
 struct MidiDeviceInfo 
 {
-    EasyMidiLibDevice   userDev         = {};
-    bool                connected       = true;
-    MIDIEndpointRef     endpoint        = 0;
-    bool                isSource        = false;  // true for input sources, false for output destinations
-    
-    std::vector<uint8_t> inputQueue;
+    EasyMidiLibDevice             userDev   = {};
+
+    MIDIEndpointRef               endpoint  = 0;
+    bool                          isSource  = false;
+    std::vector<uint8_t>          inputQueue;
 };
 
 static std::mutex                           devicesMutex;
@@ -41,233 +40,123 @@ static std::map<std::string,MidiDeviceInfo> outputs;
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static std::string GetEndpointName(MIDIEndpointRef endpoint) 
+static std::string GetEndpointName(MIDIEndpointRef endpoint)
 {
-    CFStringRef endpointName = nullptr;
-    char name[256];
+    CFStringRef name = nullptr;
+    OSStatus result = MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &name);
+    if (result != noErr || !name)
+        return "Unknown Device";
     
-    if (MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &endpointName) == noErr) {
-        if (CFStringGetCString(endpointName, name, sizeof(name), kCFStringEncodingUTF8)) {
-            CFRelease(endpointName);
-            return std::string(name);
-        }
-        CFRelease(endpointName);
-    }
-    return "Unknown Device";
+    char buffer[256];
+    Boolean success = CFStringGetCString(name, buffer, sizeof(buffer), kCFStringEncodingUTF8);
+    CFRelease(name);
+    
+    return success ? std::string(buffer) : "Unknown Device";
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static std::string GetEndpointID(MIDIEndpointRef endpoint) 
+static std::string GetEndpointID(MIDIEndpointRef endpoint)
 {
-    SInt32 uniqueID;
-    if (MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &uniqueID) == noErr) {
-        return std::to_string(uniqueID);
-    }
-    return std::to_string((uintptr_t)endpoint); // Fallback to endpoint reference
+    SInt32 uniqueID = 0;
+    OSStatus result = MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &uniqueID);
+    if (result != noErr)
+        return std::to_string((uintptr_t)endpoint); // fallback to pointer value
+    
+    return std::to_string(uniqueID);
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void MidiInputProc(const MIDIPacketList *pktlist, void *readProcRefCon, void *srcConnRefCon) 
+static void deviceConnected(MIDIEndpointRef endpoint, bool isInput, std::map<std::string,MidiDeviceInfo>& devices)
 {
-    MidiDeviceInfo* device = (MidiDeviceInfo*)srcConnRefCon;
-    
-    if (!device || !mainListener) return;
-    
     std::lock_guard<std::mutex> lock(devicesMutex);
-    
-    const MIDIPacket *packet = &pktlist->packet[0];
-    for (UInt32 i = 0; i < pktlist->numPackets; ++i) {
-        // Add packet data to input queue
-        size_t prevSize = device->inputQueue.size();
-        device->inputQueue.resize(prevSize + packet->length);
-        memcpy(device->inputQueue.data() + prevSize, packet->data, packet->length);
-        
-        // Process accumulated data
-        size_t consumedBytes = mainListener->deviceInData(&device->userDev, device->inputQueue.data(), device->inputQueue.size());
-        if (consumedBytes > 0) {
-            if (consumedBytes > device->inputQueue.size())
-                consumedBytes = device->inputQueue.size();
-            
-            device->inputQueue.erase(device->inputQueue.begin(), device->inputQueue.begin() + consumedBytes);
+
+    std::string id   = GetEndpointID(endpoint);
+    std::string name = GetEndpointName(endpoint);
+
+    auto it = devices.find(id);
+    bool alreadyExists = (it != devices.end());
+    if (alreadyExists)
+    {
+        MidiDeviceInfo& d = it->second;
+        if (!d.userDev.connected)
+        {
+            d.inputQueue.clear();
+            d.userDev.connected = true;
+            d.endpoint = endpoint;
+            if (mainListener)
+                mainListener->deviceReconnected(&d.userDev);
         }
-        
-        packet = MIDIPacketNext(packet);
+        else
+        {
+            // should not happen
+        }
+    }
+    else
+    {
+        MidiDeviceInfo d;
+        d.userDev.isInput         = isInput;
+        d.userDev.name            = name;
+        d.userDev.id              = id;
+        d.userDev.connected       = true;
+        d.userDev.opened          = false;
+        d.userDev.userPtrParam    = 0;
+        d.userDev.userIntParam    = 0;
+        d.userDev.internalHandler = 0;
+        d.endpoint                = endpoint;
+        d.isSource                = isInput;
+        d.inputQueue.reserve(10240);
+
+        devices[id] = std::move(d);
+        devices[id].userDev.internalHandler = &devices[id];
+
+        if (mainListener)
+            mainListener->deviceConnected(&devices[id].userDev);
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void MidiNotifyProc(const MIDINotification *message, void *refCon) 
+static void deviceDisconnected(const std::string& deviceId, std::map<std::string,MidiDeviceInfo>& devices)
 {
-    if (!mainListener) return;
-    
     std::lock_guard<std::mutex> lock(devicesMutex);
-    
-    switch (message->messageID) {
-        case kMIDIMsgObjectAdded: {
-            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
-            MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
-            
-            // Check if it's a source (input) or destination (output)  
-            // Try to determine if it's a source by attempting to get source count
-            ItemCount sourceCount = MIDIGetNumberOfSources();
-            ItemCount destCount = MIDIGetNumberOfDestinations();
-            bool isInput = false;
-            
-            // Check if the endpoint is in the sources list
-            for (ItemCount i = 0; i < sourceCount; i++) {
-                if (MIDIGetSource(i) == endpoint) {
-                    isInput = true;
-                    break;
-                }
-            }
-            
-            std::string id = GetEndpointID(endpoint);
-            std::string name = GetEndpointName(endpoint);
-            
-            std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
-            
-            auto it = devices.find(id);
-            if (it != devices.end()) {
-                // Device reconnected
-                it->second.connected = true;
-                it->second.endpoint = endpoint;
-                if (mainListener)
-                    mainListener->deviceReconnected(&it->second.userDev);
-            } else {
-                // New device
-                MidiDeviceInfo d;
-                d.userDev.isInput         = isInput;
-                d.userDev.name            = name;
-                d.userDev.id              = id;
-                d.userDev.opened          = false;
-                d.userDev.userPtrParam    = 0;
-                d.userDev.userIntParam    = 0;
-                d.userDev.internalHandler = 0;
-                d.endpoint                = endpoint;
-                d.connected               = true;
-                d.isSource                = isInput;
-                d.inputQueue.reserve(10240);
-                
-                devices[id] = d;
-                devices[id].userDev.internalHandler = &devices[id];
-                
-                if (mainListener)
-                    mainListener->deviceConnected(&devices[id].userDev);
-            }
-            break;
+
+    const char* deviceType = (&devices == &inputs) ? "input" : "output";
+
+    auto it = devices.find(deviceId);
+    if (it != devices.end())
+    {
+        MidiDeviceInfo& d = it->second;
+        d.inputQueue.clear();
+        d.userDev.connected = false;
+
+        if (d.userDev.opened)
+        {
+            if (d.userDev.isInput)
+                EasyMidiLib_inputClose(&d.userDev);
+            else
+                EasyMidiLib_outputClose(&d.userDev);
         }
-        case kMIDIMsgObjectRemoved: {
-            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
-            MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
-            std::string id = GetEndpointID(endpoint);
-            
-            // Check both input and output maps
-            auto inputIt = inputs.find(id);
-            if (inputIt != inputs.end()) {
-                inputIt->second.connected = false;
-                if (inputIt->second.userDev.opened) {
-                    EasyMidiLib_inputClose(&inputIt->second.userDev);
-                }
-                if (mainListener)
-                    mainListener->deviceDisconnected(&inputIt->second.userDev);
-            }
-            
-            auto outputIt = outputs.find(id);
-            if (outputIt != outputs.end()) {
-                outputIt->second.connected = false;
-                if (outputIt->second.userDev.opened) {
-                    EasyMidiLib_outputClose(&outputIt->second.userDev);
-                }
-                if (mainListener)
-                    mainListener->deviceDisconnected(&outputIt->second.userDev);
-            }
-            break;
-        }
-        case kMIDIMsgSetupChanged:
-        case kMIDIMsgPropertyChanged:
-        case kMIDIMsgThruConnectionsChanged:
-        case kMIDIMsgSerialPortOwnerChanged:
-        case kMIDIMsgIOError:
-        default:
-            // Handle other message types or ignore them
-            break;
+        
+        if (mainListener)
+            mainListener->deviceDisconnected(&d.userDev);
+    }
+    else
+    {
+        printf("EasyMidiLib: Untracked %s disconnected (id:%s) (this shouldn't happen)\n", deviceType, deviceId.c_str());
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void EnumerateDevices() 
-{
-    // Enumerate input sources
-    ItemCount numSources = MIDIGetNumberOfSources();
-    for (ItemCount i = 0; i < numSources; i++) {
-        MIDIEndpointRef source = MIDIGetSource(i);
-        if (source) {
-            std::string id = GetEndpointID(source);
-            std::string name = GetEndpointName(source);
-            
-            MidiDeviceInfo d;
-            d.userDev.isInput         = true;
-            d.userDev.name            = name;
-            d.userDev.id              = id;
-            d.userDev.opened          = false;
-            d.userDev.userPtrParam    = 0;
-            d.userDev.userIntParam    = 0;
-            d.userDev.internalHandler = 0;
-            d.endpoint                = source;
-            d.connected               = true;
-            d.isSource                = true;
-            d.inputQueue.reserve(10240);
-            
-            inputs[id] = d;
-            inputs[id].userDev.internalHandler = &inputs[id];
-            
-            if (mainListener)
-                mainListener->deviceConnected(&inputs[id].userDev);
-        }
-    }
-    
-    // Enumerate output destinations
-    ItemCount numDestinations = MIDIGetNumberOfDestinations();
-    for (ItemCount i = 0; i < numDestinations; i++) {
-        MIDIEndpointRef destination = MIDIGetDestination(i);
-        if (destination) {
-            std::string id = GetEndpointID(destination);
-            std::string name = GetEndpointName(destination);
-            
-            MidiDeviceInfo d;
-            d.userDev.isInput         = false;
-            d.userDev.name            = name;
-            d.userDev.id              = id;
-            d.userDev.opened          = false;
-            d.userDev.userPtrParam    = 0;
-            d.userDev.userIntParam    = 0;
-            d.userDev.internalHandler = 0;
-            d.endpoint                = destination;
-            d.connected               = true;
-            d.isSource                = false;
-            
-            outputs[id] = d;
-            outputs[id].userDev.internalHandler = &outputs[id];
-            
-            if (mainListener)
-                mainListener->deviceConnected(&outputs[id].userDev);
-        }
-    }
-}
-
-//--------------------------------------------------------------------------------------------------------------------------
-
-static void devicesEnumeration ( std::map<std::string,MidiDeviceInfo>& src, std::vector<const EasyMidiLibDevice*>& dst )
+static void devicesEnumeration(std::map<std::string,MidiDeviceInfo>& src, std::vector<const EasyMidiLibDevice*>& dst)
 {
     std::lock_guard<std::mutex> lock(devicesMutex);
 
     dst.resize(0);
-    for ( auto& it : src )
-        if ( it.second.connected )
+    for (auto& it : src)
+        if (it.second.userDev.connected)
             dst.push_back(&it.second.userDev);
 }
 
@@ -277,7 +166,7 @@ static std::vector<const EasyMidiLibDevice*> userInputsEnumeration;
 
 void EasyMidiLib_updateInputsEnumeration()
 {
-    devicesEnumeration ( inputs, userInputsEnumeration );
+    devicesEnumeration(inputs, userInputsEnumeration);
 }
 
 size_t EasyMidiLib_getInputDevicesNum()
@@ -285,7 +174,7 @@ size_t EasyMidiLib_getInputDevicesNum()
     return userInputsEnumeration.size();
 }
 
-const EasyMidiLibDevice* EasyMidiLib_getInputDevice( size_t i )
+const EasyMidiLibDevice* EasyMidiLib_getInputDevice(size_t i)
 {
     return userInputsEnumeration[i];
 }
@@ -296,7 +185,7 @@ static std::vector<const EasyMidiLibDevice*> userOutputsEnumeration;
 
 void EasyMidiLib_updateOutputsEnumeration()
 {
-    devicesEnumeration ( outputs, userOutputsEnumeration );
+    devicesEnumeration(outputs, userOutputsEnumeration);
 }
 
 size_t EasyMidiLib_getOutputDevicesNum()
@@ -304,14 +193,14 @@ size_t EasyMidiLib_getOutputDevicesNum()
     return userOutputsEnumeration.size();
 }
 
-const EasyMidiLibDevice* EasyMidiLib_getOutputDevice( size_t i )
+const EasyMidiLibDevice* EasyMidiLib_getOutputDevice(size_t i)
 {
     return userOutputsEnumeration[i];
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-static void setLastErrorf ( const char* textf, ... )
+static void setLastErrorf(const char* textf, ...)
 {
     va_list args;
     va_start(args, textf);
@@ -335,49 +224,148 @@ const char* EasyMidiLib_getLastError()
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_init( EasyMidiLibListener* listener )
+static void MIDINotifyCallback(const MIDINotification *message, void *refCon)
+{
+    if (!mainListener) return;
+    
+    switch (message->messageID) {
+        case kMIDIMsgObjectAdded: {
+            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
+            MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
+            
+            // Check if it's a source (input) or destination (output)  
+            ItemCount sourceCount = MIDIGetNumberOfSources();
+            bool isInput = false;
+            
+            // Check if the endpoint is in the sources list
+            for (ItemCount i = 0; i < sourceCount; i++) {
+                if (MIDIGetSource(i) == endpoint) {
+                    isInput = true;
+                    break;
+                }
+            }
+            
+            std::map<std::string,MidiDeviceInfo>& devices = isInput ? inputs : outputs;
+            deviceConnected(endpoint, isInput, devices);
+            break;
+        }
+        case kMIDIMsgObjectRemoved: {
+            const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
+            MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
+            std::string id = GetEndpointID(endpoint);
+            
+            // Check both input and output maps
+            auto inputIt = inputs.find(id);
+            if (inputIt != inputs.end()) {
+                deviceDisconnected(id, inputs);
+            }
+            
+            auto outputIt = outputs.find(id);
+            if (outputIt != outputs.end()) {
+                deviceDisconnected(id, outputs);
+            }
+            break;
+        }
+        case kMIDIMsgSetupChanged:
+        case kMIDIMsgPropertyChanged:
+        case kMIDIMsgThruConnectionsChanged:
+        case kMIDIMsgSerialPortOwnerChanged:
+        case kMIDIMsgIOError:
+        default:
+            // Handle other message types or ignore them
+            break;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+static void MIDIReadCallback(const MIDIPacketList *packetList, void *readProcRefCon, void *srcConnRefCon)
+{
+    if (!mainListener) return;
+    
+    MidiDeviceInfo* device = (MidiDeviceInfo*)srcConnRefCon;
+    if (!device || !device->userDev.opened) return;
+
+    std::lock_guard<std::mutex> lock(devicesMutex);
+
+    const MIDIPacket *packet = &packetList->packet[0];
+    for (UInt32 i = 0; i < packetList->numPackets; ++i) {
+        size_t prevSize = device->inputQueue.size();
+        device->inputQueue.resize(prevSize + packet->length);
+        memcpy(device->inputQueue.data() + prevSize, packet->data, packet->length);
+
+        size_t consumedBytes = mainListener->deviceInData(&device->userDev, device->inputQueue.data(), device->inputQueue.size());
+        if (consumedBytes > 0) {
+            if (consumedBytes > device->inputQueue.size())
+                consumedBytes = device->inputQueue.size();
+
+            device->inputQueue.erase(device->inputQueue.begin(), device->inputQueue.begin() + consumedBytes);
+        }
+
+        packet = MIDIPacketNext(packet);
+    }
+}
+
+//--------------------------------------------------------------------------------------------------------------------------
+
+bool EasyMidiLib_init(EasyMidiLibListener* listener)
 {
     if (initialized) return true;
 
     bool ok = true;
+
+    // Set listener
     mainListener = listener;
 
     // Create MIDI client
     if (ok) {
-        OSStatus status = MIDIClientCreate(CFSTR("EasyMidiLib Client"), MidiNotifyProc, nullptr, &midiClient);
-        if (status != noErr) {
-            setLastErrorf("Failed to create MIDI client: %d", (int)status);
+        OSStatus result = MIDIClientCreate(CFSTR("EasyMidiLib"), MIDINotifyCallback, nullptr, &midiClient);
+        if (result != noErr) {
+            setLastErrorf("Failed to create MIDI client: %d", (int)result);
             ok = false;
         }
     }
 
     // Create input port
     if (ok) {
-        OSStatus status = MIDIInputPortCreate(midiClient, CFSTR("EasyMidiLib Input"), MidiInputProc, nullptr, &inputPort);
-        if (status != noErr) {
-            setLastErrorf("Failed to create MIDI input port: %d", (int)status);
+        OSStatus result = MIDIInputPortCreate(midiClient, CFSTR("Input"), MIDIReadCallback, nullptr, &inputPort);
+        if (result != noErr) {
+            setLastErrorf("Failed to create MIDI input port: %d", (int)result);
             ok = false;
         }
     }
 
     // Create output port
     if (ok) {
-        OSStatus status = MIDIOutputPortCreate(midiClient, CFSTR("EasyMidiLib Output"), &outputPort);
-        if (status != noErr) {
-            setLastErrorf("Failed to create MIDI output port: %d", (int)status);
+        OSStatus result = MIDIOutputPortCreate(midiClient, CFSTR("Output"), &outputPort);
+        if (result != noErr) {
+            setLastErrorf("Failed to create MIDI output port: %d", (int)result);
             ok = false;
         }
     }
 
-    // Enumerate existing devices
+    // Enumerate input sources
     if (ok) {
-        EnumerateDevices();
+        ItemCount sourceCount = MIDIGetNumberOfSources();
+        for (ItemCount i = 0; i < sourceCount; i++) {
+            MIDIEndpointRef source = MIDIGetSource(i);
+            deviceConnected(source, true, inputs);
+        }
     }
 
-    // Finalize initialization
-    if (!ok) {
+    // Enumerate output destinations
+    if (ok) {
+        ItemCount destCount = MIDIGetNumberOfDestinations();
+        for (ItemCount i = 0; i < destCount; i++) {
+            MIDIEndpointRef dest = MIDIGetDestination(i);
+            deviceConnected(dest, false, outputs);
+        }
+    }
+
+    // Done if errors or set as initialized if ok
+    if (!ok)
         EasyMidiLib_done();
-    } else {
+    else {
         initialized = true;
         EasyMidiLib_updateInputsEnumeration();
         EasyMidiLib_updateOutputsEnumeration();
@@ -390,7 +378,7 @@ bool EasyMidiLib_init( EasyMidiLibListener* listener )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_update ( )
+bool EasyMidiLib_update()
 {
     return true;
 }
@@ -399,93 +387,93 @@ bool EasyMidiLib_update ( )
 
 void EasyMidiLib_done()
 {
-    if (inputPort) {
-        MIDIPortDispose(inputPort);
-        inputPort = 0;
-    }
-
-    if (outputPort) {
-        MIDIPortDispose(outputPort);
-        outputPort = 0;
-    }
-
-    if (midiClient) {
-        MIDIClientDispose(midiClient);
-        midiClient = 0;
-    }
-
+    // Notify to user using listener 'callback'
     if (initialized && mainListener)
         mainListener->libDone();
 
-    inputs .clear();
+    // Close inputs
+    for (auto& it : inputs)
+        EasyMidiLib_inputClose(&it.second.userDev);
+    inputs.clear();
+
+    // Close outputs
+    for (auto& it : outputs)
+        EasyMidiLib_outputClose(&it.second.userDev);
     outputs.clear();
 
-    userInputsEnumeration .clear();
+    // Clear enumeration lists
+    userInputsEnumeration.clear();
     userOutputsEnumeration.clear();
 
-    initialized   = false;
-    mainListener  = 0;
+    // Dispose MIDI client (this also disposes ports)
+    if (midiClient) {
+        MIDIClientDispose(midiClient);
+        midiClient = 0;
+        inputPort = 0;
+        outputPort = 0;
+    }
+
+    // Reset status flags
+    initialized = false;
+    mainListener = 0;
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_inputOpen ( size_t enumIndex, void* userPtrParam, int64_t userIntParam )
+bool EasyMidiLib_inputOpen(size_t enumIndex, void* userPtrParam, int64_t userIntParam)
 {
-    if ( enumIndex<userInputsEnumeration.size() )
-        return EasyMidiLib_inputOpen ( userInputsEnumeration[enumIndex], userPtrParam, userIntParam );
-    else
-    {
-        setLastErrorf("EasyMidiLib_inputOpen index %zu out of range (enum elements %zu)", enumIndex, userInputsEnumeration.size() );
+    if (enumIndex < userInputsEnumeration.size())
+        return EasyMidiLib_inputOpen(userInputsEnumeration[enumIndex], userPtrParam, userIntParam);
+    else {
+        setLastErrorf("EasyMidiLib_inputOpen index %zu out of range (enum elements %zu)", enumIndex, userInputsEnumeration.size());
         return false;
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, int64_t userIntParam )
+bool EasyMidiLib_inputOpen(const EasyMidiLibDevice* dev, void* userPtrParam, int64_t userIntParam)
 {
     bool ok = true;
 
     // Check input type
-    if ( !dev->isInput )
-    {
+    if (!dev->isInput) {
         ok = false;
-        setLastErrorf ( "EasyMidiLib_inputOpen for an output midi device:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+        setLastErrorf("EasyMidiLib_inputOpen for an output midi device:%s(%s)", dev->name.c_str(), dev->id.c_str());
     }
 
     // Check already opened
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    if ( ok )
-    {
-        if ( device->userDev.opened )
-        {
+    if (ok) {
+        if (device->userDev.opened) {
             ok = false;
-            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );        
+            setLastErrorf("Already open:%s(%s)", dev->name.c_str(), dev->id.c_str());
         }
     }
 
     // Connect to source
-    if ( ok )
-    {
-        OSStatus status = MIDIPortConnectSource(inputPort, device->endpoint, device);
-        if (status != noErr) {
-            setLastErrorf("Failed to connect to MIDI source:%s(%s) status:%d", dev->name.c_str(), dev->id.c_str(), (int)status);
+    if (ok) {
+        OSStatus result = MIDIPortConnectSource(inputPort, device->endpoint, device);
+        if (result != noErr) {
             ok = false;
-        } else {
-            device->userDev.userPtrParam = userPtrParam;
-            device->userDev.userIntParam = userIntParam;
-            device->userDev.opened       = true;
-
-            if (mainListener)
-                mainListener->deviceOpen(dev);
+            setLastErrorf("Unable to connect to source:%s(%s) error:%d", dev->name.c_str(), dev->id.c_str(), (int)result);
         }
     }
 
+    // Set as opened
+    if (ok) {
+        device->userDev.userPtrParam = userPtrParam;
+        device->userDev.userIntParam = userIntParam;
+        device->userDev.opened = true;
+
+        if (mainListener)
+            mainListener->deviceOpen(dev);
+    }
+
     // Close if errors
-    if ( !ok )
-    {
-        EasyMidiLib_inputClose ( dev );
-        setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+    if (!ok) {
+        EasyMidiLib_inputClose(dev);
+        setLastErrorf("Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str());
     }
 
     return ok;
@@ -493,18 +481,18 @@ bool EasyMidiLib_inputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, i
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
+void EasyMidiLib_inputClose(const EasyMidiLibDevice* dev)
 {
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    bool wasOpened = device->userDev.opened ;
+    bool wasOpened = device->userDev.opened;
 
-    if (device->userDev.opened) {
+    if (wasOpened && inputPort) {
         MIDIPortDisconnectSource(inputPort, device->endpoint);
     }
 
     device->userDev.opened = false;
 
-    if ( wasOpened && mainListener )
+    if (wasOpened && mainListener)
         mainListener->deviceClose(dev);
 
     device->userDev.userPtrParam = 0;
@@ -513,45 +501,40 @@ void EasyMidiLib_inputClose ( const EasyMidiLibDevice* dev )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_outputOpen ( size_t enumIndex, void* userPtrParam, int64_t userIntParam )
+bool EasyMidiLib_outputOpen(size_t enumIndex, void* userPtrParam, int64_t userIntParam)
 {
-    if ( enumIndex<userOutputsEnumeration.size() )
-        return EasyMidiLib_outputOpen ( userOutputsEnumeration[enumIndex], userPtrParam, userIntParam );
-    else
-    {
-        setLastErrorf("EasyMidiLib_outputOpen index %zu out of range (enum elements %zu)", enumIndex, userOutputsEnumeration.size() );
+    if (enumIndex < userOutputsEnumeration.size())
+        return EasyMidiLib_outputOpen(userOutputsEnumeration[enumIndex], userPtrParam, userIntParam);
+    else {
+        setLastErrorf("EasyMidiLib_outputOpen index %zu out of range (enum elements %zu)", enumIndex, userOutputsEnumeration.size());
         return false;
     }
 }
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, int64_t userIntParam )
+bool EasyMidiLib_outputOpen(const EasyMidiLibDevice* dev, void* userPtrParam, int64_t userIntParam)
 {
     bool ok = true;
 
     // Check output type
-    if ( dev->isInput )
-    {
+    if (dev->isInput) {
         ok = false;
-        setLastErrorf ( "EasyMidiLib_outputOpen for an input midi device:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+        setLastErrorf("EasyMidiLib_outputOpen for an input midi device:%s(%s)", dev->name.c_str(), dev->id.c_str());
     }
 
     // Check already opened
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    if ( ok )
-    {
-        if ( device->userDev.opened )
-        {
+    if (ok) {
+        if (device->userDev.opened) {
             ok = false;
-            setLastErrorf ( "Already open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+            setLastErrorf("Already open:%s(%s)", dev->name.c_str(), dev->id.c_str());
         }
     }
 
-    // Mark as opened (no explicit connection needed for output)
-    if ( ok )
-    {
-        device->userDev.opened       = true;
+    // Set as opened (no connection needed for output)
+    if (ok) {
+        device->userDev.opened = true;
         device->userDev.userPtrParam = userPtrParam;
         device->userDev.userIntParam = userIntParam;
 
@@ -560,10 +543,9 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, 
     }
 
     // Close if errors
-    if ( !ok )
-    {
-        EasyMidiLib_outputClose ( dev );
-        setLastErrorf ( "Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+    if (!ok) {
+        EasyMidiLib_outputClose(dev);
+        setLastErrorf("Unable to open:%s(%s)", dev->name.c_str(), dev->id.c_str());
     }
 
     return ok;
@@ -571,14 +553,14 @@ bool EasyMidiLib_outputOpen ( const EasyMidiLibDevice* dev, void* userPtrParam, 
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev )
+void EasyMidiLib_outputClose(const EasyMidiLibDevice* dev)
 {
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
     bool wasOpened = device->userDev.opened;
 
     device->userDev.opened = false;
 
-    if ( wasOpened && mainListener )
+    if (wasOpened && mainListener)
         mainListener->deviceClose(dev);
 
     device->userDev.userPtrParam = 0;
@@ -587,50 +569,49 @@ void EasyMidiLib_outputClose ( const EasyMidiLibDevice* dev )
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data, size_t size  )
+bool EasyMidiLib_outputSend(const EasyMidiLibDevice* dev, const uint8_t* data, size_t size)
 {
     bool ok = true;
 
     // Check output type
-    if ( dev->isInput )
-    {
+    if (dev->isInput) {
         ok = false;
-        setLastErrorf ( "EasyMidiLib_outputSend: can't send using input midi device:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+        setLastErrorf("EasyMidiLib_outputSend: can't send using input midi device:%s(%s)", dev->name.c_str(), dev->id.c_str());
     }
 
     // Check already opened
     MidiDeviceInfo* device = (MidiDeviceInfo*)dev->internalHandler;
-    if ( ok )
-    {
-        if ( !device->userDev.opened )
-        {
+    if (ok) {
+        if (!device->userDev.opened) {
             ok = false;
-            setLastErrorf ( "EasyMidiLib_outputSend: closed device:%s(%s)", dev->name.c_str(), dev->id.c_str() );
+            setLastErrorf("EasyMidiLib_outputSend: closed device:%s(%s)", dev->name.c_str(), dev->id.c_str());
         }
     }
 
-    if ( ok ) 
-    {
-        if ( mainListener )
-            mainListener->deviceOutData(&device->userDev, data, size );
+    if (ok) {
+        if (mainListener)
+            mainListener->deviceOutData(&device->userDev, data, size);
 
-        // Create MIDI packet list
+        // Create MIDI packet
         Byte packetBuffer[1024];
         MIDIPacketList *packetList = (MIDIPacketList*)packetBuffer;
         MIDIPacket *packet = MIDIPacketListInit(packetList);
         
-        // Add data to packet (timestamp 0 = send immediately)
-        packet = MIDIPacketListAdd(packetList, sizeof(packetBuffer), packet, 0, size, data);
-        
         if (packet) {
-            OSStatus status = MIDISend(outputPort, device->endpoint, packetList);
-            if (status != noErr) {
-                setLastErrorf("Failed to send MIDI data:%s(%s) status:%d", dev->name.c_str(), dev->id.c_str(), (int)status);
+            packet = MIDIPacketListAdd(packetList, sizeof(packetBuffer), packet, 0, size, data);
+            if (packet) {
+                OSStatus result = MIDISend(outputPort, device->endpoint, packetList);
+                if (result != noErr) {
+                    ok = false;
+                    setLastErrorf("MIDISend failed: %d", (int)result);
+                }
+            } else {
                 ok = false;
+                setLastErrorf("Failed to create MIDI packet");
             }
         } else {
-            setLastErrorf("Failed to create MIDI packet:%s(%s)", dev->name.c_str(), dev->id.c_str());
             ok = false;
+            setLastErrorf("Failed to initialize MIDI packet list");
         }
     }
 
@@ -639,4 +620,4 @@ bool EasyMidiLib_outputSend ( const EasyMidiLibDevice* dev, const uint8_t* data,
 
 //--------------------------------------------------------------------------------------------------------------------------
 
-#endif //defined(__APPLE__)
+#endif //__APPLE__
