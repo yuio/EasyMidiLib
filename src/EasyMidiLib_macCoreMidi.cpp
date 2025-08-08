@@ -226,10 +226,10 @@ const char* EasyMidiLib_getLastError()
 
 static void MIDINotifyCallback(const MIDINotification *message, void *refCon)
 {
-    if (!mainListener) return;
-    
+    printf("MIDINotifyCallback: messageID = %d\n", (int)message->messageID);
     switch (message->messageID) {
         case kMIDIMsgObjectAdded: {
+            printf("Device added notification\n");
             const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
             MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
             
@@ -250,6 +250,7 @@ static void MIDINotifyCallback(const MIDINotification *message, void *refCon)
             break;
         }
         case kMIDIMsgObjectRemoved: {
+            printf("Device removed notification\n");
             const MIDIObjectAddRemoveNotification *addRemoveMsg = (const MIDIObjectAddRemoveNotification *)message;
             MIDIEndpointRef endpoint = (MIDIEndpointRef)addRemoveMsg->child;
             std::string id = GetEndpointID(endpoint);

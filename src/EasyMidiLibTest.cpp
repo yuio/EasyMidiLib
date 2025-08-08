@@ -1,5 +1,9 @@
 #include "EasyMidiLib.h"
 
+#ifdef __APPLE__
+    #include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #ifdef _WIN32
     #include <windows.h>
     #include <conio.h>
@@ -104,8 +108,12 @@ int main(int argc, char* argv[])
         {
             EasyMidiLib_update();
 
-          if (_kbhit()) 
-          {
+            #ifdef __APPLE__
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
+            #endif
+
+            if (_kbhit()) 
+            {
                 int key = _getch();
                 switch (key)
                 {
