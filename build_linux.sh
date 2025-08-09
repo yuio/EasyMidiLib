@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Change to script's directory
+cd "$(dirname "$0")"
+
 CONFIG="Release"
 if [ "$1" = "debug" ]; then
     CONFIG="Debug"
